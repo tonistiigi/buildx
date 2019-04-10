@@ -81,17 +81,21 @@ func runBuild(dockerCli command.Cli, in buildOptions) error {
 
 	opts.Session = append(opts.Session, authprovider.NewDockerAuthProvider())
 
-	secrets, err := build.ParseSecretSpecs(in.secrets)
-	if err != nil {
-		return err
+	if len(in.secrets) == 0 {
+		secrets, err := build.ParseSecretSpecs(in.secrets)
+		if err != nil {
+			return err
+		}
+		opts.Session = append(opts.Session, secrets)
 	}
-	opts.Session = append(opts.Session, secrets)
 
-	ssh, err := build.ParseSSHSpecs(in.ssh)
-	if err != nil {
-		return err
+	if len(in.ssh) == 0 {
+		ssh, err := build.ParseSSHSpecs(in.ssh)
+		if err != nil {
+			return err
+		}
+		opts.Session = append(opts.Session, ssh)
 	}
-	opts.Session = append(opts.Session, ssh)
 
 	outputs, err := build.ParseOutputs(in.outputs)
 	if err != nil {

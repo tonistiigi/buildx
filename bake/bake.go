@@ -5,7 +5,6 @@ import (
 	"io/ioutil"
 	"strings"
 
-	"github.com/moby/buildkit/session/auth/authprovider"
 	"github.com/pkg/errors"
 	"github.com/tonistiigi/buildx/build"
 )
@@ -260,19 +259,21 @@ func toBuildOpt(t Target) (*build.Options, error) {
 	}
 	bo.Platforms = platforms
 
-	bo.Session = append(bo.Session, authprovider.NewDockerAuthProvider())
-
-	secrets, err := build.ParseSecretSpecs(t.Secrets)
-	if err != nil {
-		return nil, err
+	if len(t.Secrets) > 0 {
+		secrets, err := build.ParseSecretSpecs(t.Secrets)
+		if err != nil {
+			return nil, err
+		}
+		bo.Session = append(bo.Session, secrets)
 	}
-	bo.Session = append(bo.Session, secrets)
 
-	ssh, err := build.ParseSSHSpecs(t.SSH)
-	if err != nil {
-		return nil, err
+	if len(t.SSH) > 0 {
+		ssh, err := build.ParseSSHSpecs(t.SSH)
+		if err != nil {
+			return nil, err
+		}
+		bo.Session = append(bo.Session, ssh)
 	}
-	bo.Session = append(bo.Session, ssh)
 
 	if t.Target != nil {
 		bo.Target = *t.Target

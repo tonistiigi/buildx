@@ -1,0 +1,14 @@
+version: "3.8"
+
+services:
+  webapp:
+    build:
+      dockerfile: Dockerfile
+      target: t1
+      args:
+        buildno: 1
+  webapp2:
+    build:
+      target: t2
+      args:
+        buildno: 1

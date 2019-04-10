@@ -3,6 +3,7 @@ package build
 import (
 	"context"
 	"io"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/containerd/containerd/platforms"
 	"github.com/moby/buildkit/client"
 	"github.com/moby/buildkit/session"
+	"github.com/moby/buildkit/session/auth/authprovider"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
 	"github.com/tonistiigi/buildx/driver"
@@ -65,6 +67,7 @@ func Build(ctx context.Context, drivers []driver.Driver, opt map[string]Options,
 
 	resp := map[string]*client.SolveResponse{}
 	var mu sync.Mutex
+	sessions := map[Inputs]*session.Session{}
 
 	for k, opt := range opt {
 		pw := mw.WithPrefix(k, withPrefix)
@@ -94,13 +97,34 @@ func Build(ctx context.Context, drivers []driver.Driver, opt map[string]Options,
 				}
 			}
 		}
+
 		// TODO: handle loading to docker daemon
 
 		so.Exports = opt.Exports
 		so.Session = opt.Session
 
+		shareSession := (len(opt.Exports) == 0 || opt.Exports[0].Type != "local" && opt.Exports[0].Type != "tar" && opt.Exports[0].Type != "oci" && opt.Exports[0].Type != "docker") && len(opt.Session) == 0
+
+		so.Session = append(so.Session, authprovider.NewDockerAuthProvider())
+
 		if err := LoadInputs(opt.Inputs, &so); err != nil {
 			return nil, err
+		}
+
+		if shareSession {
+			s, ok := sessions[opt.Inputs]
+			if !ok {
+				name := getSessionName(opt.Inputs)
+				s, err = session.NewSession(ctx, name, name)
+				if err != nil {
+					return nil, err
+				}
+				sessions[opt.Inputs] = s
+			} else {
+				so.SessionPreInitialized = true
+			}
+
+			so.SharedSession = s
 		}
 
 		if opt.Pull {
@@ -179,4 +203,16 @@ func LoadInputs(inp Inputs, target *client.SolveOpt) error {
 
 	target.FrontendAttrs["filename"] = filepath.Base(inp.DockerfilePath)
 	return nil
+}
+
+func getSessionName(inp Inputs) string {
+	base := filepath.Base(filepath.Join("/", inp.ContextPath))
+	if base == "." && base == string(filepath.Separator) {
+		d, err := os.Getwd()
+		if err != nil {
+			return "unknown"
+		}
+		return filepath.Base(d)
+	}
+	return base
 }

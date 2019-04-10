@@ -9,7 +9,7 @@ import (
 
 func TestParseCompose(t *testing.T) {
 	var dt = []byte(`
-version: "3"
+version: "3.8"
 
 services:
   db:
@@ -20,6 +20,7 @@ services:
     build:
       context: ./dir
       dockerfile: Dockerfile-alternate
+      target: foo
       args:
         buildno: 123
 `)
@@ -38,4 +39,5 @@ services:
 	require.Equal(t, "Dockerfile-alternate", c.Target["webapp"].Dockerfile)
 	require.Equal(t, 1, len(c.Target["webapp"].Args))
 	require.Equal(t, "123", c.Target["webapp"].Args["buildno"])
+	require.Equal(t, "foo", *c.Target["webapp"].Target)
 }
