@@ -455,6 +455,61 @@ func (t *Target) normalize() {
 	t.Outputs = removeDupes(t.Outputs)
 }
 
+func (t1 *Target) Merge(t2 *Target) {
+	if t2.Context != nil {
+		t1.Context = t2.Context
+	}
+	if t2.Dockerfile != nil {
+		t1.Dockerfile = t2.Dockerfile
+	}
+	if t2.DockerfileInline != nil {
+		t1.DockerfileInline = t2.DockerfileInline
+	}
+	for k, v := range t2.Args {
+		if t1.Args == nil {
+			t1.Args = map[string]string{}
+		}
+		t1.Args[k] = v
+	}
+	for k, v := range t2.Labels {
+		if t1.Labels == nil {
+			t1.Labels = map[string]string{}
+		}
+		t1.Labels[k] = v
+	}
+	if t2.Tags != nil { // no merge
+		t1.Tags = t2.Tags
+	}
+	if t2.Target != nil {
+		t1.Target = t2.Target
+	}
+	if t2.Secrets != nil { // merge
+		t1.Secrets = append(t1.Secrets, t2.Secrets...)
+	}
+	if t2.SSH != nil { // merge
+		t1.SSH = append(t1.SSH, t2.SSH...)
+	}
+	if t2.Platforms != nil { // no merge
+		t1.Platforms = t2.Platforms
+	}
+	if t2.CacheFrom != nil { // no merge
+		t1.CacheFrom = append(t1.CacheFrom, t2.CacheFrom...)
+	}
+	if t2.CacheTo != nil { // no merge
+		t1.CacheTo = t2.CacheTo
+	}
+	if t2.Outputs != nil { // no merge
+		t1.Outputs = t2.Outputs
+	}
+	if t2.Pull != nil {
+		t1.Pull = t2.Pull
+	}
+	if t2.NoCache != nil {
+		t1.NoCache = t2.NoCache
+	}
+	t1.Inherits = append(t1.Inherits, t2.Inherits...)
+}
+
 func TargetsToBuildOpt(m map[string]*Target, inp *Input) (map[string]build.Options, error) {
 	m2 := make(map[string]build.Options, len(m))
 	for k, v := range m {

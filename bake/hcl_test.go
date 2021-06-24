@@ -1,9 +1,13 @@
 package bake
 
 import (
+	"log"
 	"os"
 	"testing"
 
+	"github.com/docker/buildx/bake/hclparser"
+	hcl "github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclparse"
 	"github.com/stretchr/testify/require"
 )
 
@@ -565,4 +569,48 @@ func TestHCLFunctionInAttr(t *testing.T) {
 	require.Equal(t, 1, len(c.Targets))
 	require.Equal(t, c.Targets[0].Name, "app")
 	require.Equal(t, "FOO <> [baz]", c.Targets[0].Args["v1"])
+}
+
+func TestNew(t *testing.T) {
+	type Config struct {
+		Groups  []*Group  `json:"group" hcl:"group,block"`
+		Targets []*Target `json:"target" hcl:"target,block"`
+	}
+	var c Config
+	dt := `
+	variable "FOO" {
+		default = "abc"
+	}
+	v2=lower("BAZ")
+	target "app" {
+		args = {
+			"v1": v2
+		}
+	}
+	target "app" {
+		args = {
+			"v2": "aa${FOO}"
+		}
+	}`
+	f, diags := hclparse.NewParser().ParseHCL([]byte(dt), "docker-bake.hcl")
+	require.False(t, diags.HasErrors())
+	dt2 := `
+	variable "FOO" {
+		default = "abc2"
+	}
+	target "app" {
+		args = {
+			"v3": "aa${FOO}"
+		}
+	}`
+	f2, diags := hclparse.NewParser().ParseHCL([]byte(dt2), "docker-bake2.hcl")
+	require.False(t, diags.HasErrors())
+	b := hcl.MergeFiles([]*hcl.File{f, f2})
+	diags = hclparser.Parse(b, hclparser.Opt{}, &c)
+	log.Printf("%+v", diags)
+	require.False(t, diags.HasErrors())
+	log.Printf("c %+v", c)
+	for _, t := range c.Targets {
+		log.Printf("r %+v", t)
+	}
 }

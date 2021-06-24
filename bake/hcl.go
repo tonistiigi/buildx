@@ -134,7 +134,11 @@ var (
 type StaticConfig struct {
 	Variables []*Variable `hcl:"variable,block"`
 	Functions []*Function `hcl:"function,block"`
-	Remain    hcl.Body    `hcl:",remain"`
+
+	Groups  []*Group  `json:"group" hcl:"group,block"`
+	Targets []*Target `json:"target" hcl:"target,block"`
+
+	Remain hcl.Body `hcl:",remain"`
 
 	attrs hcl.Attributes
 
