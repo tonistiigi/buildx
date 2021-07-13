@@ -61,8 +61,8 @@ func ReadLocalFiles(names []string) ([]File, error) {
 	return out, nil
 }
 
-func ReadTargets(ctx context.Context, files []File, targets, overrides []string) (map[string]*Target, error) {
-	c, err := ParseFiles(files)
+func ReadTargets(ctx context.Context, files []File, targets, overrides []string, defaults map[string]string) (map[string]*Target, error) {
+	c, err := ParseFiles(files, defaults)
 	if err != nil {
 		return nil, err
 	}
@@ -86,7 +86,7 @@ func ReadTargets(ctx context.Context, files []File, targets, overrides []string)
 	return m, nil
 }
 
-func ParseFiles(files []File) (_ *Config, err error) {
+func ParseFiles(files []File, defaults map[string]string) (_ *Config, err error) {
 	defer func() {
 		err = formatHCLError(err, files)
 	}()
@@ -120,6 +120,7 @@ func ParseFiles(files []File) (_ *Config, err error) {
 	if len(fs) > 0 {
 		if err := hclparser.Parse(hcl.MergeFiles(fs), hclparser.Opt{
 			LookupVar: os.LookupEnv,
+			Vars:      defaults,
 		}, &c); err.HasErrors() {
 			return nil, err
 		}
@@ -143,7 +144,7 @@ func dedupeConfig(c Config) Config {
 }
 
 func ParseFile(dt []byte, fn string) (*Config, error) {
-	return ParseFiles([]File{{Data: dt, Name: fn}})
+	return ParseFiles([]File{{Data: dt, Name: fn}}, nil)
 }
 
 func ParseComposeFile(dt []byte, fn string) (*Config, bool, error) {
@@ -542,7 +543,9 @@ func toBuildOpt(t *Target, inp *Input) (*build.Options, error) {
 	if t.Context != nil {
 		contextPath = *t.Context
 	}
-	contextPath = path.Clean(contextPath)
+	if !strings.HasPrefix(contextPath, "cwd://") {
+		contextPath = path.Clean(contextPath)
+	}
 	dockerfilePath := "Dockerfile"
 	if t.Dockerfile != nil {
 		dockerfilePath = *t.Dockerfile
@@ -569,6 +572,9 @@ func toBuildOpt(t *Target, inp *Input) (*build.Options, error) {
 		bi.DockerfileInline = *t.DockerfileInline
 	}
 	updateContext(&bi, inp)
+	bi.ContextPath = path.Clean(strings.TrimPrefix(bi.ContextPath, "cwd://"))
+
+	t.Context = &bi.ContextPath
 
 	bo := &build.Options{
 		Inputs:    bi,
