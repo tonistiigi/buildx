@@ -134,16 +134,17 @@ func (d *Driver) create(ctx context.Context, l progress.SubLogger) error {
 		if err != nil {
 			return err
 		}
-		if f := d.InitConfig.ConfigFile; f != "" {
-			configFiles, err := confutil.LoadConfigFiles(f)
-			if err != nil {
-				return err
-			}
-			defer os.RemoveAll(configFiles)
-			if err := d.copyToContainer(ctx, configFiles, "/"); err != nil {
-				return err
-			}
-		}
+		// TODO: copy over all d.InitConfig.Files
+		// if f := d.InitConfig.ConfigFile; f != "" {
+		// configFiles, err := confutil.LoadConfigFiles(f)
+		// if err != nil {
+		// 	return err
+		// }
+		// defer os.RemoveAll(configFiles)
+		// if err := d.copyToContainer(ctx, configFiles, "/"); err != nil {
+		// 	return err
+		// }
+		// }
 		if err := d.start(ctx, l); err != nil {
 			return err
 		}
