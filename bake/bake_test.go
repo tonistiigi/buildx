@@ -419,8 +419,140 @@ func TestReadContexts(t *testing.T) {
 
 	ctxs = bo["app"].Inputs.NamedContexts
 	require.Equal(t, 1, len(ctxs))
-
 	require.Equal(t, "def", ctxs["abc"])
+}
+
+func TestReadContextFromTargetUnknown(t *testing.T) {
+	fp := File{
+		Name: "docker-bake.hcl",
+		Data: []byte(`
+		target "base" {
+			contexts = {
+				foo: "bar"
+				abc: "def"
+			}
+		}
+		target "app" {
+			contexts = {
+				foo: "baz"
+				bar: "target:bar"
+			}
+		}
+		`),
+	}
+
+	ctx := context.TODO()
+	_, _, err := ReadTargets(ctx, []File{fp}, []string{"app"}, []string{}, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "failed to find target bar")
+}
+func TestReadContextFromTargetChain(t *testing.T) {
+	ctx := context.TODO()
+	fp := File{
+		Name: "docker-bake.hcl",
+		Data: []byte(`
+		target "base" {
+		}
+		target "mid" {
+			output = ["foo"]
+			contexts = {
+				parent: "target:base"
+			}
+		}
+		target "app" {
+			contexts = {
+				foo: "baz"
+				bar: "target:mid"
+			}
+		}
+		target "unused" {}
+		`),
+	}
+
+	m, _, err := ReadTargets(ctx, []File{fp}, []string{"app"}, []string{}, nil)
+	require.NoError(t, err)
+
+	require.Equal(t, 3, len(m))
+	app, ok := m["app"]
+	require.True(t, ok)
+
+	require.Equal(t, 2, len(app.Contexts))
+
+	mid, ok := m["mid"]
+	require.True(t, ok)
+	require.Equal(t, 0, len(mid.Outputs))
+	require.Equal(t, 1, len(mid.Contexts))
+
+	base, ok := m["base"]
+	require.True(t, ok)
+	require.Equal(t, 0, len(base.Contexts))
+}
+
+func TestReadContextFromTargetInfiniteLoop(t *testing.T) {
+	ctx := context.TODO()
+	fp := File{
+		Name: "docker-bake.hcl",
+		Data: []byte(`
+		target "mid" {
+			output = ["foo"]
+			contexts = {
+				parent: "target:app"
+			}
+		}
+		target "app" {
+			contexts = {
+				foo: "baz"
+				bar: "target:mid"
+			}
+		}
+		`),
+	}
+	_, _, err := ReadTargets(ctx, []File{fp}, []string{"app", "mid"}, []string{}, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "infinite loop from")
+}
+
+func TestReadContextFromTargetMultiPlatform(t *testing.T) {
+	ctx := context.TODO()
+	fp := File{
+		Name: "docker-bake.hcl",
+		Data: []byte(`
+		target "mid" {
+			output = ["foo"]
+			platforms = ["linux/amd64", "linux/arm64"]
+		}
+		target "app" {
+			contexts = {
+				bar: "target:mid"
+			}
+			platforms = ["linux/amd64", "linux/arm64"]
+		}
+		`),
+	}
+	_, _, err := ReadTargets(ctx, []File{fp}, []string{"app"}, []string{}, nil)
+	require.NoError(t, err)
+}
+
+func TestReadContextFromTargetInvalidPlatforms(t *testing.T) {
+	ctx := context.TODO()
+	fp := File{
+		Name: "docker-bake.hcl",
+		Data: []byte(`
+		target "mid" {
+			output = ["foo"]
+			platforms = ["linux/amd64", "linux/riscv64"]
+		}
+		target "app" {
+			contexts = {
+				bar: "target:mid"
+			}
+			platforms = ["linux/amd64", "linux/arm64"]
+		}
+		`),
+	}
+	_, _, err := ReadTargets(ctx, []File{fp}, []string{"app"}, []string{}, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "defined for different platforms")
 }
 
 func TestReadTargetsDefault(t *testing.T) {

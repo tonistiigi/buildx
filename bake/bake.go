@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -123,6 +124,12 @@ func ReadTargets(ctx context.Context, files []File, targets, overrides []string,
 			}
 		}
 		g = []*Group{{Targets: dedupString(gt)}}
+	}
+
+	for name, t := range m {
+		if err := c.loadLinks(name, t, m, o, nil); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	return m, g, nil
@@ -295,6 +302,42 @@ func (c Config) expandTargets(pattern string) ([]string, error) {
 		return nil, errors.Errorf("could not find any target matching '%s'", pattern)
 	}
 	return names, nil
+}
+
+func (c Config) loadLinks(name string, t *Target, m map[string]*Target, o map[string]map[string]Override, visited []string) error {
+	visited = append(visited, name)
+	for _, v := range t.Contexts {
+		if strings.HasPrefix(v, "target:") {
+			target := strings.TrimPrefix(v, "target:")
+			if target == t.Name {
+				return errors.Errorf("target %s cannot link to itself", target)
+			}
+			for _, v := range visited {
+				if v == target {
+					return errors.Errorf("infinite loop from %s to %s", name, target)
+				}
+			}
+			t2, ok := m[target]
+			if !ok {
+				var err error
+				t2, err = c.ResolveTarget(target, o)
+				if err != nil {
+					return err
+				}
+				t2.Outputs = nil
+				m[target] = t2
+			}
+			if err := c.loadLinks(target, t2, m, o, visited); err != nil {
+				return err
+			}
+			if len(t.Platforms) > 1 && len(t2.Platforms) > 1 {
+				if !sliceEqual(t.Platforms, t2.Platforms) {
+					return errors.Errorf("target %s can't be used by %s because it is defined for different platforms %v and %v", target, name, t2.Platforms, t.Platforms)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func (c Config) newOverrides(v []string) (map[string]map[string]Override, error) {
@@ -825,4 +868,18 @@ func parseOutputType(str string) string {
 		}
 	}
 	return ""
+}
+
+func sliceEqual(s1, s2 []string) bool {
+	if len(s1) != len(s2) {
+		return false
+	}
+	sort.Strings(s1)
+	sort.Strings(s2)
+	for i := range s1 {
+		if s1[i] != s2[i] {
+			return false
+		}
+	}
+	return true
 }
