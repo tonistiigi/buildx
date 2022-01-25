@@ -353,6 +353,76 @@ func TestOverrideMerge(t *testing.T) {
 	require.Equal(t, "type=registry", m["app"].Outputs[0])
 }
 
+func TestReadContexts(t *testing.T) {
+	fp := File{
+		Name: "docker-bake.hcl",
+		Data: []byte(`
+		target "base" {
+			contexts = {
+				foo: "bar"
+				abc: "def"
+			}
+		}
+		target "app" {
+			inherits = ["base"]
+			contexts = {
+				foo: "baz"
+			}
+		}
+		`),
+	}
+
+	ctx := context.TODO()
+	m, _, err := ReadTargets(ctx, []File{fp}, []string{"app"}, []string{}, nil)
+	require.NoError(t, err)
+
+	require.Equal(t, 1, len(m))
+	_, ok := m["app"]
+	require.True(t, ok)
+
+	bo, err := TargetsToBuildOpt(m, &Input{})
+	require.NoError(t, err)
+
+	ctxs := bo["app"].Inputs.NamedContexts
+	require.Equal(t, 2, len(ctxs))
+
+	require.Equal(t, "baz", ctxs["foo"])
+	require.Equal(t, "def", ctxs["abc"])
+
+	m, _, err = ReadTargets(ctx, []File{fp}, []string{"app"}, []string{"app.contexts.foo=bay", "base.contexts.ghi=jkl"}, nil)
+	require.NoError(t, err)
+
+	require.Equal(t, 1, len(m))
+	_, ok = m["app"]
+	require.True(t, ok)
+
+	bo, err = TargetsToBuildOpt(m, &Input{})
+	require.NoError(t, err)
+
+	ctxs = bo["app"].Inputs.NamedContexts
+	require.Equal(t, 3, len(ctxs))
+
+	require.Equal(t, "bay", ctxs["foo"])
+	require.Equal(t, "def", ctxs["abc"])
+	require.Equal(t, "jkl", ctxs["ghi"])
+
+	// test resetting base values
+	m, _, err = ReadTargets(ctx, []File{fp}, []string{"app"}, []string{"app.contexts.foo="}, nil)
+	require.NoError(t, err)
+
+	require.Equal(t, 1, len(m))
+	_, ok = m["app"]
+	require.True(t, ok)
+
+	bo, err = TargetsToBuildOpt(m, &Input{})
+	require.NoError(t, err)
+
+	ctxs = bo["app"].Inputs.NamedContexts
+	require.Equal(t, 1, len(ctxs))
+
+	require.Equal(t, "def", ctxs["abc"])
+}
+
 func TestReadTargetsDefault(t *testing.T) {
 	t.Parallel()
 	ctx := context.TODO()

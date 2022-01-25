@@ -300,7 +300,6 @@ func (c Config) expandTargets(pattern string) ([]string, error) {
 func (c Config) newOverrides(v []string) (map[string]map[string]Override, error) {
 	m := map[string]map[string]Override{}
 	for _, v := range v {
-
 		parts := strings.SplitN(v, "=", 2)
 		keys := strings.SplitN(parts[0], ".", 3)
 		if len(keys) < 2 {
@@ -343,6 +342,11 @@ func (c Config) newOverrides(v []string) (map[string]map[string]Override, error)
 						continue
 					}
 					o.Value = v
+				}
+				fallthrough
+			case "contexts":
+				if len(keys) != 3 {
+					return nil, errors.Errorf("invalid key %s, contexts requires name", parts[0])
 				}
 				fallthrough
 			default:
@@ -455,6 +459,7 @@ type Target struct {
 	Inherits []string `json:"inherits,omitempty" hcl:"inherits,optional"`
 
 	Context          *string           `json:"context,omitempty" hcl:"context,optional"`
+	Contexts         map[string]string `json:"contexts,omitempty" hcl:"contexts,optional"`
 	Dockerfile       *string           `json:"dockerfile,omitempty" hcl:"dockerfile,optional"`
 	DockerfileInline *string           `json:"dockerfile-inline,omitempty" hcl:"dockerfile-inline,optional"`
 	Args             map[string]string `json:"args,omitempty" hcl:"args,optional"`
@@ -482,6 +487,15 @@ func (t *Target) normalize() {
 	t.CacheFrom = removeDupes(t.CacheFrom)
 	t.CacheTo = removeDupes(t.CacheTo)
 	t.Outputs = removeDupes(t.Outputs)
+
+	for k, v := range t.Contexts {
+		if v == "" {
+			delete(t.Contexts, k)
+		}
+	}
+	if len(t.Contexts) == 0 {
+		t.Contexts = nil
+	}
 }
 
 func (t *Target) Merge(t2 *Target) {
@@ -499,6 +513,12 @@ func (t *Target) Merge(t2 *Target) {
 			t.Args = map[string]string{}
 		}
 		t.Args[k] = v
+	}
+	for k, v := range t2.Contexts {
+		if t.Contexts == nil {
+			t.Contexts = map[string]string{}
+		}
+		t.Contexts[k] = v
 	}
 	for k, v := range t2.Labels {
 		if t.Labels == nil {
@@ -559,7 +579,14 @@ func (t *Target) AddOverrides(overrides map[string]Override) error {
 				t.Args = map[string]string{}
 			}
 			t.Args[keys[1]] = value
-
+		case "contexts":
+			if len(keys) != 2 {
+				return errors.Errorf("contexts require name")
+			}
+			if t.Contexts == nil {
+				t.Contexts = map[string]string{}
+			}
+			t.Contexts[keys[1]] = value
 		case "labels":
 			if len(keys) != 2 {
 				return errors.Errorf("labels require name")
@@ -687,6 +714,7 @@ func toBuildOpt(t *Target, inp *Input) (*build.Options, error) {
 	bi := build.Inputs{
 		ContextPath:    contextPath,
 		DockerfilePath: dockerfilePath,
+		NamedContexts:  t.Contexts,
 	}
 	if t.DockerfileInline != nil {
 		bi.DockerfileInline = *t.DockerfileInline
