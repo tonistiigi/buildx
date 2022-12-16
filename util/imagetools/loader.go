@@ -4,7 +4,6 @@ package imagetools
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"sort"
 	"strings"
@@ -15,7 +14,6 @@ import (
 	"github.com/containerd/containerd/platforms"
 	"github.com/containerd/containerd/remotes"
 	"github.com/docker/distribution/reference"
-	binfotypes "github.com/moby/buildkit/util/buildinfo/types"
 	"github.com/moby/buildkit/util/contentutil"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -49,8 +47,8 @@ type index struct {
 
 type asset struct {
 	config     *ocispec.Image
-	sbom       map[string]interface{}
-	provenance *provenance
+	sbom       json.RawMessage
+	provenance json.RawMessage
 }
 
 type result struct {
@@ -132,7 +130,7 @@ func (l *loader) Load(ctx context.Context, ref string) (*result, error) {
 			}
 		}
 
-		if err := l.scanProvenance(ctx, fetcher, mfst.manifest.Config, &a); err != nil {
+		if err := l.scanProvenance(ctx, fetcher, r, refs, &a); err != nil {
 			return nil, err
 		}
 
@@ -265,7 +263,6 @@ func (l *loader) scanSBOM(ctx context.Context, fetcher remotes.Fetcher, r *resul
 		}
 		for _, layer := range mfst.manifest.Layers {
 			if layer.MediaType == "application/vnd.in-toto+json" && layer.Annotations["in-toto.io/predicate-type"] == "https://spdx.dev/Document" {
-				var sbom map[string]interface{}
 				_, err := remotes.FetchHandler(l.cache, fetcher)(ctx, layer)
 				if err != nil {
 					return err
@@ -274,93 +271,34 @@ func (l *loader) scanSBOM(ctx context.Context, fetcher remotes.Fetcher, r *resul
 				if err != nil {
 					return err
 				}
-				if err := json.Unmarshal(dt, &sbom); err != nil {
-					return err
-				}
-				as.sbom = sbom
+				as.sbom = dt
 			}
 		}
 	}
 	return nil
 }
 
-type provenance struct { // TODO: this is only a stub, to be refactored later
-	BuildSource     string            `json:",omitempty"`
-	BuildDefinition string            `json:",omitempty"`
-	BuildParameters map[string]string `json:",omitempty"`
-	Materials       []material
-}
-
-type material struct {
-	Type  string `json:",omitempty"`
-	Ref   string `json:",omitempty"`
-	Alias string `json:",omitempty"`
-	Pin   string `json:",omitempty"`
-}
-
-func (l *loader) scanProvenance(ctx context.Context, fetcher remotes.Fetcher, desc ocispec.Descriptor, as *asset) error {
-	_, err := remotes.FetchHandler(l.cache, fetcher)(ctx, desc)
-	if err != nil {
-		return err
-	}
-	dt, err := content.ReadBlob(ctx, l.cache, desc)
-	if err != nil {
-		return err
-	}
-
-	var cfg binfotypes.ImageConfig
-	if err := json.Unmarshal(dt, &cfg); err != nil {
-		return err
-	}
-
-	if cfg.BuildInfo == "" {
-		return nil
-	}
-
-	dt, err = base64.StdEncoding.DecodeString(cfg.BuildInfo)
-	if err != nil {
-		return errors.Wrapf(err, "failed to decode buildinfo base64")
-	}
-
-	var bi binfotypes.BuildInfo
-	if err := json.Unmarshal(dt, &bi); err != nil {
-		return errors.Wrapf(err, "failed to decode buildinfo")
-	}
-
-	p := &provenance{}
-	defer func() {
-		as.provenance = p
-	}()
-	if bs := bi.Attrs["context"]; bs != nil {
-		p.BuildSource = *bs
-	}
-
-	if fn := bi.Attrs["filename"]; fn != nil {
-		p.BuildDefinition = *fn
-	}
-
-	for key, val := range bi.Attrs {
-		if val == nil || !strings.HasPrefix(key, "build-arg:") {
-			continue
+func (l *loader) scanProvenance(ctx context.Context, fetcher remotes.Fetcher, r *result, refs []digest.Digest, as *asset) error {
+	ctx = remotes.WithMediaTypeKeyPrefix(ctx, "application/vnd.in-toto+json", "intoto")
+	for _, dgst := range refs {
+		mfst, ok := r.manifests[dgst]
+		if !ok {
+			return errors.Errorf("referenced image %s not found", dgst)
 		}
-		if p.BuildParameters == nil {
-			p.BuildParameters = make(map[string]string)
-		}
-		p.BuildParameters[strings.TrimPrefix(key, "build-arg:")] = *val
-	}
-
-	p.Materials = make([]material, len(bi.Sources))
-
-	for i, src := range bi.Sources {
-		// TODO: mark base image
-		p.Materials[i] = material{
-			Type:  string(src.Type),
-			Ref:   src.Ref,
-			Alias: src.Alias,
-			Pin:   src.Pin,
+		for _, layer := range mfst.manifest.Layers {
+			if layer.MediaType == "application/vnd.in-toto+json" && strings.HasPrefix(layer.Annotations["in-toto.io/predicate-type"], "https://slsa.dev/provenance/") {
+				_, err := remotes.FetchHandler(l.cache, fetcher)(ctx, layer)
+				if err != nil {
+					return err
+				}
+				dt, err := content.ReadBlob(ctx, l.cache, layer)
+				if err != nil {
+					return err
+				}
+				as.provenance = dt
+			}
 		}
 	}
-
 	return nil
 }
 
@@ -378,11 +316,11 @@ func (r *result) Configs() map[string]*ocispec.Image {
 	return res
 }
 
-func (r *result) Provenances() map[string]*provenance {
+func (r *result) Provenances() map[string]json.RawMessage {
 	if len(r.assets) == 0 {
 		return nil
 	}
-	res := make(map[string]*provenance)
+	res := make(map[string]json.RawMessage)
 	for p, a := range r.assets {
 		if a.provenance == nil {
 			continue
@@ -392,11 +330,11 @@ func (r *result) Provenances() map[string]*provenance {
 	return res
 }
 
-func (r *result) SBOMs() map[string]map[string]interface{} {
+func (r *result) SBOMs() map[string]json.RawMessage {
 	if len(r.assets) == 0 {
 		return nil
 	}
-	res := make(map[string]map[string]interface{})
+	res := make(map[string]json.RawMessage)
 	for p, a := range r.assets {
 		if a.sbom == nil {
 			continue

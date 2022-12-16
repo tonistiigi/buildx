@@ -149,11 +149,11 @@ func (p *Printer) Print(raw bool, out io.Writer) error {
 	default:
 		if len(p.res.platforms) > 1 {
 			return tpl.Execute(out, struct {
-				Name       string                            `json:"name,omitempty"`
-				Manifest   interface{}                       `json:"manifest,omitempty"`
-				Image      map[string]*ocispecs.Image        `json:"image,omitempty"`
-				Provenance map[string]*provenance            `json:"provenance,omitempty"`
-				SBOM       map[string]map[string]interface{} `json:"sbom,omitempty"`
+				Name       string                     `json:"name,omitempty"`
+				Manifest   interface{}                `json:"manifest,omitempty"`
+				Image      map[string]*ocispecs.Image `json:"image,omitempty"`
+				Provenance map[string]json.RawMessage `json:"SLSA,omitempty"`
+				SBOM       map[string]json.RawMessage `json:"SPDX,omitempty"`
 			}{
 				Name:       p.name,
 				Manifest:   mfst,
@@ -166,20 +166,20 @@ func (p *Printer) Print(raw bool, out io.Writer) error {
 		for _, v := range imageconfigs {
 			ic = v
 		}
-		var prv *provenance
+		var prv json.RawMessage
 		for _, v := range provenances {
 			prv = v
 		}
-		var sbom map[string]interface{}
+		var sbom json.RawMessage
 		for _, v := range sboms {
 			sbom = v
 		}
 		return tpl.Execute(out, struct {
-			Name       string                 `json:"name,omitempty"`
-			Manifest   interface{}            `json:"manifest,omitempty"`
-			Image      *ocispecs.Image        `json:"image,omitempty"`
-			Provenance *provenance            `json:"provenance,omitempty"`
-			SBOM       map[string]interface{} `json:"sbom,omitempty"`
+			Name       string          `json:"name,omitempty"`
+			Manifest   interface{}     `json:"manifest,omitempty"`
+			Image      *ocispecs.Image `json:"image,omitempty"`
+			Provenance json.RawMessage `json:"provenance,omitempty"`
+			SBOM       json.RawMessage `json:"sbom,omitempty"`
 		}{
 			Name:       p.name,
 			Manifest:   mfst,
@@ -234,7 +234,7 @@ func (p *Printer) printManifestList(out io.Writer) error {
 	return w.Flush()
 }
 
-func (p *Printer) printProvenances(provenances map[string]*provenance, out io.Writer) error {
+func (p *Printer) printProvenances(provenances map[string]json.RawMessage, out io.Writer) error {
 	if len(provenances) == 0 {
 		return nil
 	} else if len(provenances) == 1 {
@@ -242,10 +242,8 @@ func (p *Printer) printProvenances(provenances map[string]*provenance, out io.Wr
 			return p.printProvenance(pr, "", out)
 		}
 	}
-	var pkeys []string
-	for _, pform := range p.res.platforms {
-		pkeys = append(pkeys, pform)
-	}
+	pkeys := append([]string{}, p.res.platforms...)
+
 	sort.Strings(pkeys)
 	for _, platform := range pkeys {
 		if pr, ok := provenances[platform]; ok {
@@ -260,47 +258,7 @@ func (p *Printer) printProvenances(provenances map[string]*provenance, out io.Wr
 	return nil
 }
 
-func (p *Printer) printProvenance(pr *provenance, pfx string, out io.Writer) error {
-	w := tabwriter.NewWriter(out, 0, 0, 1, ' ', 0)
-	_, _ = fmt.Fprintf(w, "%sBuildSource:\t%s\n", pfx, pr.BuildSource)
-	_, _ = fmt.Fprintf(w, "%sBuildDefinition:\t%s\n", pfx, pr.BuildDefinition)
-
-	if len(pr.BuildParameters) > 0 {
-		_, _ = fmt.Fprintf(w, "%sBuildParameters:\t\n", pfx)
-		_ = w.Flush()
-		for k, v := range pr.BuildParameters {
-			_, _ = fmt.Fprintf(w, "%s%s:\t%s\n", pfx+defaultPfx, k, v)
-		}
-	}
-
-	if len(pr.Materials) > 0 {
-		_, _ = fmt.Fprintf(w, "%sMaterials:\t\n", pfx)
-		_ = w.Flush()
-		for i, v := range pr.Materials {
-			if i != 0 {
-				_, _ = fmt.Fprintf(w, "\t\n")
-			}
-			_, _ = fmt.Fprintf(w, "%sType:\t%s\n", pfx+defaultPfx, v.Type)
-			_, _ = fmt.Fprintf(w, "%sRef:\t%s\n", pfx+defaultPfx, v.Ref)
-			_, _ = fmt.Fprintf(w, "%sPin:\t%s\n", pfx+defaultPfx, v.Pin)
-		}
-	}
-
-	// TODO: deps not yet implemented with provenance
-	//if len(pr.Deps) > 0 {
-	//	_, _ = fmt.Fprintf(w, "%sDeps:\t\n", pfx)
-	//	_ = w.Flush()
-	//	firstPass := true
-	//	for k, v := range pr.Deps {
-	//		if !firstPass {
-	//			_, _ = fmt.Fprintf(w, "\t\n")
-	//		}
-	//		_, _ = fmt.Fprintf(w, "%sName:\t%s\n", pfx+defaultPfx, k)
-	//		_ = w.Flush()
-	//		_ = p.printProvenance(&v, pfx+defaultPfx, out)
-	//		firstPass = false
-	//	}
-	//}
-
-	return w.Flush()
+func (p *Printer) printProvenance(pr json.RawMessage, pfx string, out io.Writer) error {
+	_, err := out.Write(pr)
+	return err
 }
