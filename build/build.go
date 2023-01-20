@@ -33,6 +33,7 @@ import (
 	"github.com/docker/distribution/reference"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/builder/remotecontext/urlutil"
+	"github.com/docker/docker/pkg/ioutils"
 	"github.com/docker/docker/pkg/jsonmessage"
 	"github.com/moby/buildkit/client"
 	"github.com/moby/buildkit/client/llb"
@@ -228,7 +229,9 @@ func resolveDrivers(ctx context.Context, nodes []builder.Node, opt map[string]Op
 
 		func(i int, c *client.Client) {
 			eg.Go(func() error {
-				clients[i].Build(ctx, client.SolveOpt{}, "buildx", func(ctx context.Context, c gateway.Client) (*gateway.Result, error) {
+				clients[i].Build(ctx, client.SolveOpt{
+					Internal: true,
+				}, "buildx", func(ctx context.Context, c gateway.Client) (*gateway.Result, error) {
 					bopts[i] = c.BuildOpts()
 					return nil, nil
 				}, nil)
@@ -881,6 +884,35 @@ func BuildWithResultHandler(ctx context.Context, nodes []builder.Node, opt map[s
 				so.FrontendAttrs[k] = v
 			}
 			defers = append(defers, release)
+
+			ref := identity.NewID()
+			so.Ref = ref
+
+			refDir := filepath.Join(configDir, "refs", node.Name)
+			if err := os.MkdirAll(refDir, 0700); err != nil {
+				return nil, err
+			}
+
+			lp := opt.Inputs.ContextPath
+			if lp != "" {
+				lp, err := filepath.Abs(lp)
+				if err != nil {
+					return nil, err
+				}
+				md := struct {
+					LocalPath string
+				}{
+					LocalPath: lp,
+				}
+				dt, err := json.Marshal(md)
+				if err != nil {
+					return nil, err
+				}
+				if err := ioutils.AtomicWriteFile(filepath.Join(refDir, ref), dt, 0600); err != nil {
+					return nil, err
+				}
+			}
+
 			m[k][i].so = so
 		}
 		for _, at := range opt.Session {
@@ -1142,6 +1174,7 @@ func BuildWithResultHandler(ctx context.Context, nodes []builder.Node, opt map[s
 
 						cc := c
 						var printRes map[string][]byte
+
 						rr, err := c.Build(ctx, so, "buildx", func(ctx context.Context, c gateway.Client) (*gateway.Result, error) {
 							var isFallback bool
 							var origErr error
