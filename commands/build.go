@@ -44,6 +44,7 @@ import (
 	"github.com/moby/buildkit/solver/errdefs"
 	"github.com/moby/buildkit/util/appcontext"
 	"github.com/moby/buildkit/util/grpcerrors"
+	"github.com/moby/buildkit/util/progress/progressui"
 	"github.com/morikuni/aec"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -54,6 +55,7 @@ import (
 
 type buildOptions struct {
 	allow          []string
+	annotations    []string
 	buildArgs      []string
 	cacheFrom      []string
 	cacheTo        []string
@@ -98,14 +100,25 @@ type buildOptions struct {
 
 func (o *buildOptions) toControllerOptions() (*controllerapi.BuildOptions, error) {
 	var err error
+
+	buildArgs, err := listToMap(o.buildArgs, true)
+	if err != nil {
+		return nil, err
+	}
+
+	labels, err := listToMap(o.labels, false)
+	if err != nil {
+		return nil, err
+	}
+
 	opts := controllerapi.BuildOptions{
 		Allow:          o.allow,
-		BuildArgs:      listToMap(o.buildArgs, true),
+		BuildArgs:      buildArgs,
 		CgroupParent:   o.cgroupParent,
 		ContextPath:    o.contextPath,
 		DockerfileName: o.dockerfileName,
 		ExtraHosts:     o.extraHosts,
-		Labels:         listToMap(o.labels, false),
+		Labels:         labels,
 		NetworkMode:    o.networkMode,
 		NoCacheFilter:  o.noCacheFilter,
 		Platforms:      o.platforms,
@@ -159,6 +172,16 @@ func (o *buildOptions) toControllerOptions() (*controllerapi.BuildOptions, error
 		}
 	}
 
+	annotations, err := buildflags.ParseAnnotations(o.annotations)
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range opts.Exports {
+		for k, v := range annotations {
+			e.Attrs[k.String()] = v
+		}
+	}
+
 	opts.CacheFrom, err = buildflags.ParseCacheEntry(o.cacheFrom)
 	if err != nil {
 		return nil, err
@@ -185,20 +208,15 @@ func (o *buildOptions) toControllerOptions() (*controllerapi.BuildOptions, error
 	return &opts, nil
 }
 
-func (o *buildOptions) toProgress() (string, error) {
-	switch o.progress {
-	case progress.PrinterModeAuto, progress.PrinterModeTty, progress.PrinterModePlain, progress.PrinterModeQuiet:
-	default:
-		return "", errors.Errorf("progress=%s is not a valid progress option", o.progress)
-	}
-
+func (o *buildOptions) toDisplayMode() (progressui.DisplayMode, error) {
+	progress := progressui.DisplayMode(o.progress)
 	if o.quiet {
-		if o.progress != progress.PrinterModeAuto && o.progress != progress.PrinterModeQuiet {
+		if progress != progressui.AutoMode && progress != progressui.QuietMode {
 			return "", errors.Errorf("progress=%s and quiet cannot be used together", o.progress)
 		}
-		return progress.PrinterModeQuiet, nil
+		return progressui.QuietMode, nil
 	}
-	return o.progress, nil
+	return progress, nil
 }
 
 func runBuild(dockerCli command.Cli, options buildOptions) (err error) {
@@ -234,7 +252,7 @@ func runBuild(dockerCli command.Cli, options buildOptions) (err error) {
 	if err != nil {
 		return err
 	}
-	_, err = b.LoadNodes(ctx, false)
+	_, err = b.LoadNodes(ctx)
 	if err != nil {
 		return err
 	}
@@ -246,12 +264,12 @@ func runBuild(dockerCli command.Cli, options buildOptions) (err error) {
 
 	ctx2, cancel := context.WithCancel(context.TODO())
 	defer cancel()
-	progressMode, err := options.toProgress()
+	progressMode, err := options.toDisplayMode()
 	if err != nil {
 		return err
 	}
 	var printer *progress.Printer
-	printer, err = progress.NewPrinter(ctx2, os.Stderr, os.Stderr, progressMode,
+	printer, err = progress.NewPrinter(ctx2, os.Stderr, progressMode,
 		progress.WithDesc(
 			fmt.Sprintf("building with %q instance using %s driver", b.Name, b.Driver),
 			fmt.Sprintf("%s:%s", b.Driver, b.Name),
@@ -279,7 +297,7 @@ func runBuild(dockerCli command.Cli, options buildOptions) (err error) {
 		return retErr
 	}
 
-	if progressMode != progress.PrinterModeQuiet {
+	if progressMode != progressui.QuietMode {
 		desktop.PrintBuildDetails(os.Stderr, printer.BuildRefs(), term)
 	} else {
 		fmt.Println(getImageID(resp.ExporterResponse))
@@ -458,13 +476,15 @@ func buildCmd(dockerCli command.Cli, rootOpts *rootOptions) *cobra.Command {
 
 	flags.StringSliceVar(&options.allow, "allow", []string{}, `Allow extra privileged entitlement (e.g., "network.host", "security.insecure")`)
 
+	flags.StringArrayVarP(&options.annotations, "annotation", "", []string{}, "Add annotation to the image")
+
 	flags.StringArrayVar(&options.buildArgs, "build-arg", []string{}, "Set build-time variables")
 
 	flags.StringArrayVar(&options.cacheFrom, "cache-from", []string{}, `External cache sources (e.g., "user/app:cache", "type=local,src=path/to/dir")`)
 
 	flags.StringArrayVar(&options.cacheTo, "cache-to", []string{}, `Cache export destinations (e.g., "user/app:cache", "type=local,dest=path/to/dir")`)
 
-	flags.StringVar(&options.cgroupParent, "cgroup-parent", "", "Optional parent cgroup for the container")
+	flags.StringVar(&options.cgroupParent, "cgroup-parent", "", `Set the parent cgroup for the "RUN" instructions during build`)
 	flags.SetAnnotation("cgroup-parent", annotation.ExternalURL, []string{"https://docs.docker.com/engine/reference/commandline/build/#cgroup-parent"})
 
 	flags.StringArrayVar(&options.contexts, "build-context", []string{}, "Additional build contexts (e.g., name=path)")
@@ -719,6 +739,7 @@ func parseInvokeConfig(invoke string) (cfg invokeConfig, err error) {
 	}
 	if len(fields) == 1 && !strings.Contains(fields[0], "=") {
 		cfg.Cmd = []string{fields[0]}
+		cfg.NoCmd = false
 		return cfg, nil
 	}
 	cfg.NoUser = true
@@ -768,24 +789,24 @@ func maybeJSONArray(v string) []string {
 	return []string{v}
 }
 
-func listToMap(values []string, defaultEnv bool) map[string]string {
+func listToMap(values []string, defaultEnv bool) (map[string]string, error) {
 	result := make(map[string]string, len(values))
 	for _, value := range values {
-		kv := strings.SplitN(value, "=", 2)
-		if len(kv) == 1 {
-			if defaultEnv {
-				v, ok := os.LookupEnv(kv[0])
-				if ok {
-					result[kv[0]] = v
-				}
-			} else {
-				result[kv[0]] = ""
+		k, v, hasValue := strings.Cut(value, "=")
+		if k == "" {
+			return nil, errors.Errorf("invalid key-value pair %q: empty key", value)
+		}
+		if hasValue {
+			result[k] = v
+		} else if defaultEnv {
+			if envVal, ok := os.LookupEnv(k); ok {
+				result[k] = envVal
 			}
 		} else {
-			result[kv[0]] = kv[1]
+			result[k] = ""
 		}
 	}
-	return result
+	return result, nil
 }
 
 func dockerUlimitToControllerUlimit(u *dockeropts.UlimitOpt) *controllerapi.UlimitOpt {
@@ -803,8 +824,8 @@ func dockerUlimitToControllerUlimit(u *dockeropts.UlimitOpt) *controllerapi.Ulim
 	return &controllerapi.UlimitOpt{Values: values}
 }
 
-func printWarnings(w io.Writer, warnings []client.VertexWarning, mode string) {
-	if len(warnings) == 0 || mode == progress.PrinterModeQuiet {
+func printWarnings(w io.Writer, warnings []client.VertexWarning, mode progressui.DisplayMode) {
+	if len(warnings) == 0 || mode == progressui.QuietMode {
 		return
 	}
 	fmt.Fprintf(w, "\n ")

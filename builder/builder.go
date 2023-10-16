@@ -13,6 +13,7 @@ import (
 	"github.com/docker/buildx/util/imagetools"
 	"github.com/docker/buildx/util/progress"
 	"github.com/docker/cli/cli/command"
+	"github.com/moby/buildkit/util/progress/progressui"
 	"github.com/pkg/errors"
 	"golang.org/x/sync/errgroup"
 )
@@ -157,7 +158,7 @@ func (b *Builder) Boot(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 
-	printer, err := progress.NewPrinter(context.TODO(), os.Stderr, os.Stderr, progress.PrinterModeAuto)
+	printer, err := progress.NewPrinter(context.TODO(), os.Stderr, progressui.AutoMode)
 	if err != nil {
 		return false, err
 	}
@@ -207,7 +208,7 @@ type driverFactory struct {
 }
 
 // Factory returns the driver factory.
-func (b *Builder) Factory(ctx context.Context) (_ driver.Factory, err error) {
+func (b *Builder) Factory(ctx context.Context, dialMeta map[string][]string) (_ driver.Factory, err error) {
 	b.driverFactory.once.Do(func() {
 		if b.Driver != "" {
 			b.driverFactory.Factory, err = driver.GetFactory(b.Driver, true)
@@ -230,7 +231,7 @@ func (b *Builder) Factory(ctx context.Context) (_ driver.Factory, err error) {
 			if _, err = dockerapi.Ping(ctx); err != nil {
 				return
 			}
-			b.driverFactory.Factory, err = driver.GetDefaultFactory(ctx, ep, dockerapi, false)
+			b.driverFactory.Factory, err = driver.GetDefaultFactory(ctx, ep, dockerapi, false, dialMeta)
 			if err != nil {
 				return
 			}

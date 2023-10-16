@@ -53,6 +53,7 @@ func RunBuild(ctx context.Context, dockerCli command.Cli, in controllerapi.Build
 			InStream:       inStream,
 			NamedContexts:  contexts,
 		},
+		Ref:           in.Ref,
 		BuildArgs:     in.BuildArgs,
 		CgroupParent:  in.CgroupParent,
 		ExtraHosts:    in.ExtraHosts,
@@ -65,6 +66,7 @@ func RunBuild(ctx context.Context, dockerCli command.Cli, in controllerapi.Build
 		Tags:          in.Tags,
 		Target:        in.Target,
 		Ulimits:       controllerUlimitOpt2DockerUlimit(in.Ulimits),
+		GroupRef:      in.GroupRef,
 	}
 
 	platforms, err := platformutil.Parse(in.Platforms)
@@ -74,7 +76,7 @@ func RunBuild(ctx context.Context, dockerCli command.Cli, in controllerapi.Build
 	opts.Platforms = platforms
 
 	dockerConfig := config.LoadDefaultConfigFile(os.Stderr)
-	opts.Session = append(opts.Session, authprovider.NewDockerAuthProvider(dockerConfig))
+	opts.Session = append(opts.Session, authprovider.NewDockerAuthProvider(dockerConfig, nil))
 
 	secrets, err := controllerapi.CreateSecrets(in.Secrets)
 	if err != nil {
@@ -169,7 +171,7 @@ func RunBuild(ctx context.Context, dockerCli command.Cli, in controllerapi.Build
 	if err = updateLastActivity(dockerCli, b.NodeGroup); err != nil {
 		return nil, nil, errors.Wrapf(err, "failed to update builder last activity time")
 	}
-	nodes, err := b.LoadNodes(ctx, false)
+	nodes, err := b.LoadNodes(ctx)
 	if err != nil {
 		return nil, nil, err
 	}

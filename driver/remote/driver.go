@@ -2,13 +2,13 @@ package remote
 
 import (
 	"context"
-	"time"
+	"errors"
+	"net"
 
 	"github.com/docker/buildx/driver"
 	"github.com/docker/buildx/util/progress"
 	"github.com/moby/buildkit/client"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/backoff"
+	"github.com/moby/buildkit/util/tracing/detect"
 )
 
 type Driver struct {
@@ -66,11 +66,13 @@ func (d *Driver) Rm(ctx context.Context, force, rmVolume, rmDaemon bool) error {
 func (d *Driver) Client(ctx context.Context) (*client.Client, error) {
 	opts := []client.ClientOpt{}
 
-	backoffConfig := backoff.DefaultConfig
-	backoffConfig.MaxDelay = 1 * time.Second
-	opts = append(opts, client.WithGRPCDialOption(
-		grpc.WithConnectParams(grpc.ConnectParams{Backoff: backoffConfig}),
-	))
+	exp, err := detect.Exporter()
+	if err != nil {
+		return nil, err
+	}
+	if td, ok := exp.(client.TracerDelegate); ok {
+		opts = append(opts, client.WithTracerDelegate(td))
+	}
 
 	if d.tlsOpts != nil {
 		opts = append(opts, []client.ClientOpt{
@@ -89,6 +91,10 @@ func (d *Driver) Features(ctx context.Context) map[driver.Feature]bool {
 		driver.CacheExport:    true,
 		driver.MultiPlatform:  true,
 	}
+}
+
+func (d *Driver) HostGatewayIP(ctx context.Context) (net.IP, error) {
+	return nil, errors.New("host-gateway is not supported by the remote driver")
 }
 
 func (d *Driver) Factory() driver.Factory {

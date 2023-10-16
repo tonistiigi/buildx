@@ -40,7 +40,7 @@ func runInspect(dockerCli command.Cli, in inspectOptions) error {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
-	nodes, err := b.LoadNodes(timeoutCtx, true)
+	nodes, err := b.LoadNodes(timeoutCtx, builder.WithData())
 	if in.bootstrap {
 		var ok bool
 		ok, err = b.Boot(ctx)
@@ -48,7 +48,7 @@ func runInspect(dockerCli command.Cli, in inspectOptions) error {
 			return err
 		}
 		if ok {
-			nodes, err = b.LoadNodes(timeoutCtx, true)
+			nodes, err = b.LoadNodes(timeoutCtx, builder.WithData())
 		}
 	}
 
@@ -93,7 +93,10 @@ func runInspect(dockerCli command.Cli, in inspectOptions) error {
 				if nodes[i].Version != "" {
 					fmt.Fprintf(w, "Buildkit:\t%s\n", nodes[i].Version)
 				}
-				fmt.Fprintf(w, "Platforms:\t%s\n", strings.Join(platformutil.FormatInGroups(n.Node.Platforms, n.Platforms), ", "))
+				platforms := platformutil.FormatInGroups(n.Node.Platforms, n.Platforms)
+				if len(platforms) > 0 {
+					fmt.Fprintf(w, "Platforms:\t%s\n", strings.Join(platforms, ", "))
+				}
 				if debug.IsEnabled() {
 					fmt.Fprintf(w, "Features:\n")
 					features := nodes[i].Driver.Features(ctx)

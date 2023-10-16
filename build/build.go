@@ -23,9 +23,9 @@ import (
 	"github.com/containerd/containerd/content/local"
 	"github.com/containerd/containerd/images"
 	"github.com/containerd/containerd/platforms"
+	"github.com/distribution/reference"
 	"github.com/docker/buildx/builder"
 	"github.com/docker/buildx/driver"
-	"github.com/docker/buildx/localstate"
 	"github.com/docker/buildx/util/desktop"
 	"github.com/docker/buildx/util/dockerutil"
 	"github.com/docker/buildx/util/imagetools"
@@ -33,7 +33,6 @@ import (
 	"github.com/docker/buildx/util/resolver"
 	"github.com/docker/buildx/util/waitmap"
 	"github.com/docker/cli/opts"
-	"github.com/docker/distribution/reference"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/builder/remotecontext/urlutil"
 	"github.com/docker/docker/pkg/jsonmessage"
@@ -72,6 +71,7 @@ const (
 type Options struct {
 	Inputs Inputs
 
+	Ref           string
 	Allow         []entitlements.Entitlement
 	Attests       map[string]*string
 	BuildArgs     map[string]string
@@ -91,12 +91,11 @@ type Options struct {
 	Target        string
 	Ulimits       *opts.UlimitOpt
 
-	Session []session.Attachable
-
-	// Linked marks this target as exclusively linked (not requested by the user).
-	Linked       bool
+	Session      []session.Attachable
+	Linked       bool // Linked marks this target as exclusively linked (not requested by the user).
 	PrintFunc    *PrintFunc
 	SourcePolicy *spb.Policy
+	GroupRef     string
 }
 
 type PrintFunc struct {
@@ -391,7 +390,7 @@ func toSolveOpt(ctx context.Context, node builder.Node, multiDriver bool, opt Op
 
 	for _, e := range opt.CacheTo {
 		if e.Type != "inline" && !nodeDriver.Features(ctx)[driver.CacheExport] {
-			return nil, nil, notSupported(nodeDriver, driver.CacheExport)
+			return nil, nil, notSupported(driver.CacheExport, nodeDriver, "https://docs.docker.com/go/build-cache-backends/")
 		}
 	}
 
@@ -424,6 +423,7 @@ func toSolveOpt(ctx context.Context, node builder.Node, multiDriver bool, opt Op
 	}
 
 	so := client.SolveOpt{
+		Ref:                 opt.Ref,
 		Frontend:            "dockerfile.v0",
 		FrontendAttrs:       map[string]string{},
 		LocalDirs:           map[string]string{},
@@ -431,6 +431,10 @@ func toSolveOpt(ctx context.Context, node builder.Node, multiDriver bool, opt Op
 		CacheImports:        cacheFrom,
 		AllowedEntitlements: opt.Allow,
 		SourcePolicy:        opt.SourcePolicy,
+	}
+
+	if so.Ref == "" {
+		so.Ref = identity.NewID()
 	}
 
 	if opt.CgroupParent != "" {
@@ -529,7 +533,7 @@ func toSolveOpt(ctx context.Context, node builder.Node, multiDriver bool, opt Op
 	// set up exporters
 	for i, e := range opt.Exports {
 		if e.Type == "oci" && !nodeDriver.Features(ctx)[driver.OCIExporter] {
-			return nil, nil, notSupported(nodeDriver, driver.OCIExporter)
+			return nil, nil, notSupported(driver.OCIExporter, nodeDriver, "https://docs.docker.com/go/build-exporters/")
 		}
 		if e.Type == "docker" {
 			features := docker.Features(ctx, e.Attrs["context"])
@@ -552,10 +556,12 @@ func toSolveOpt(ctx context.Context, node builder.Node, multiDriver bool, opt Op
 						return nil, nil, err
 					}
 					defers = append(defers, cancel)
-					opt.Exports[i].Output = wrapWriteCloser(w)
+					opt.Exports[i].Output = func(_ map[string]string) (io.WriteCloser, error) {
+						return w, nil
+					}
 				}
 			} else if !nodeDriver.Features(ctx)[driver.DockerExporter] {
-				return nil, nil, notSupported(nodeDriver, driver.DockerExporter)
+				return nil, nil, notSupported(driver.DockerExporter, nodeDriver, "https:/docs.docker.com/go/build-exporters/")
 			}
 		}
 		if e.Type == "image" && nodeDriver.IsMobyDriver() {
@@ -627,7 +633,7 @@ func toSolveOpt(ctx context.Context, node builder.Node, multiDriver bool, opt Op
 			pp[i] = platforms.Format(p)
 		}
 		if len(pp) > 1 && !nodeDriver.Features(ctx)[driver.MultiPlatform] {
-			return nil, nil, notSupported(nodeDriver, driver.MultiPlatform)
+			return nil, nil, notSupported(driver.MultiPlatform, nodeDriver, "https://docs.docker.com/go/build-multi-platform/")
 		}
 		so.FrontendAttrs["platform"] = strings.Join(pp, ",")
 	}
@@ -664,12 +670,6 @@ func toSolveOpt(ctx context.Context, node builder.Node, multiDriver bool, opt Op
 		return nil, nil, err
 	} else if len(ulimits) > 0 {
 		so.FrontendAttrs["ulimit"] = ulimits
-	}
-
-	// remember local state like directory path that is not sent to buildkit
-	so.Ref = identity.NewID()
-	if err := saveLocalState(so, opt, node, configDir); err != nil {
-		return nil, nil, err
 	}
 
 	return &so, releaseF, nil
@@ -747,6 +747,9 @@ func BuildWithResultHandler(ctx context.Context, nodes []builder.Node, opt map[s
 			opt.Platforms = np.platforms
 			so, release, err := toSolveOpt(ctx, node, multiDriver, opt, np.bopts, configDir, w, docker)
 			if err != nil {
+				return nil, err
+			}
+			if err := saveLocalState(so, k, opt, node, configDir); err != nil {
 				return nil, err
 			}
 			for k, v := range gitattrs {
@@ -1560,8 +1563,10 @@ func waitContextDeps(ctx context.Context, index int, results *waitmap.Map, so *c
 	return nil
 }
 
-func notSupported(d driver.Driver, f driver.Feature) error {
-	return errors.Errorf("%s feature is currently not supported for %s driver. Please switch to a different driver (eg. \"docker buildx create --use\")", f, d.Factory().Name())
+func notSupported(f driver.Feature, d driver.Driver, docs string) error {
+	return errors.Errorf(`%s is not supported for the %s driver.
+Switch to a different driver, or turn on the containerd image store, and try again.
+Learn more at %s`, f, d.Factory().Name(), docs)
 }
 
 func noDefaultLoad() bool {
@@ -1607,12 +1612,6 @@ func handleLowercaseDockerfile(dir, p string) string {
 	return p
 }
 
-func wrapWriteCloser(wc io.WriteCloser) func(map[string]string) (io.WriteCloser, error) {
-	return func(map[string]string) (io.WriteCloser, error) {
-		return wc, nil
-	}
-}
-
 var nodeIdentifierMu sync.Mutex
 
 func tryNodeIdentifier(configDir string) (out string) {
@@ -1645,43 +1644,6 @@ func noPrintFunc(opt map[string]Options) bool {
 		}
 	}
 	return true
-}
-
-func saveLocalState(so client.SolveOpt, opt Options, node builder.Node, configDir string) error {
-	var err error
-
-	if so.Ref == "" {
-		return nil
-	}
-
-	lp := opt.Inputs.ContextPath
-	dp := opt.Inputs.DockerfilePath
-	if lp != "" || dp != "" {
-		if lp != "" {
-			lp, err = filepath.Abs(lp)
-			if err != nil {
-				return err
-			}
-		}
-		if dp != "" {
-			dp, err = filepath.Abs(dp)
-			if err != nil {
-				return err
-			}
-		}
-		ls, err := localstate.New(configDir)
-		if err != nil {
-			return err
-		}
-		if err := ls.SaveRef(node.Builder, node.Name, so.Ref, localstate.State{
-			LocalPath:      lp,
-			DockerfilePath: dp,
-		}); err != nil {
-			return err
-		}
-	}
-
-	return nil
 }
 
 // ReadSourcePolicy reads a source policy from a file.

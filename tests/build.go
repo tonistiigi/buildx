@@ -20,6 +20,7 @@ import (
 	"github.com/moby/buildkit/util/testutil/integration"
 	"github.com/opencontainers/go-digest"
 	"github.com/pkg/errors"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -40,6 +41,12 @@ var buildTests = []func(t *testing.T, sb integration.Sandbox){
 	testBuildMobyFromLocalImage,
 	testBuildDetailsLink,
 	testBuildProgress,
+	testBuildAnnotations,
+	testBuildBuildArgNoKey,
+	testBuildLabelNoKey,
+	testBuildCacheExportNotSupported,
+	testBuildOCIExportNotSupported,
+	testBuildMultiPlatformNotSupported,
 }
 
 func testBuild(t *testing.T, sb integration.Sandbox) {
@@ -312,4 +319,99 @@ func testBuildProgress(t *testing.T, sb integration.Sandbox) {
 	require.Contains(t, string(plainOutput), fmt.Sprintf(`#0 building with "%s" instance using %s driver`, name, driver))
 	require.Contains(t, string(plainOutput), "[internal] load build definition from Dockerfile")
 	require.Contains(t, string(plainOutput), "[base 1/3] FROM docker.io/library/busybox:latest")
+}
+
+func testBuildAnnotations(t *testing.T, sb integration.Sandbox) {
+	if sb.Name() == "docker" {
+		t.Skip("annotations not supported on docker worker")
+	}
+
+	dir := createTestProject(t)
+
+	registry, err := sb.NewRegistry()
+	if errors.Is(err, integration.ErrRequirements) {
+		t.Skip(err.Error())
+	}
+	require.NoError(t, err)
+	target := registry + "/buildx/registry:latest"
+
+	annotations := []string{
+		"--annotation", "example1=www",
+		"--annotation", "index:example2=xxx",
+		"--annotation", "manifest:example3=yyy",
+		"--annotation", "manifest-descriptor[" + platforms.DefaultString() + "]:example4=zzz",
+	}
+	out, err := buildCmd(sb, withArgs(annotations...), withArgs(fmt.Sprintf("--output=type=image,name=%s,push=true", target), dir))
+	require.NoError(t, err, string(out))
+
+	desc, provider, err := contentutil.ProviderFromRef(target)
+	require.NoError(t, err)
+	imgs, err := testutil.ReadImages(sb.Context(), provider, desc)
+	require.NoError(t, err)
+
+	pk := platforms.Format(platforms.Normalize(platforms.DefaultSpec()))
+	img := imgs.Find(pk)
+	require.NotNil(t, img)
+
+	require.NotNil(t, imgs.Index)
+	assert.Equal(t, "xxx", imgs.Index.Annotations["example2"])
+
+	require.NotNil(t, img.Manifest)
+	assert.Equal(t, "www", img.Manifest.Annotations["example1"])
+	assert.Equal(t, "yyy", img.Manifest.Annotations["example3"])
+
+	require.NotNil(t, img.Desc)
+	assert.Equal(t, "zzz", img.Desc.Annotations["example4"])
+}
+
+func testBuildBuildArgNoKey(t *testing.T, sb integration.Sandbox) {
+	dir := createTestProject(t)
+	cmd := buildxCmd(sb, withArgs("build", "--build-arg", "=TEST_STRING", dir))
+	out, err := cmd.CombinedOutput()
+	require.Error(t, err, string(out))
+	require.Equal(t, strings.TrimSpace(string(out)), `ERROR: invalid key-value pair "=TEST_STRING": empty key`)
+}
+
+func testBuildLabelNoKey(t *testing.T, sb integration.Sandbox) {
+	dir := createTestProject(t)
+	cmd := buildxCmd(sb, withArgs("build", "--label", "=TEST_STRING", dir))
+	out, err := cmd.CombinedOutput()
+	require.Error(t, err, string(out))
+	require.Equal(t, strings.TrimSpace(string(out)), `ERROR: invalid key-value pair "=TEST_STRING": empty key`)
+}
+
+func testBuildCacheExportNotSupported(t *testing.T, sb integration.Sandbox) {
+	if sb.Name() != "docker" {
+		t.Skip("skipping test for non-docker workers")
+	}
+
+	dir := createTestProject(t)
+	cmd := buildxCmd(sb, withArgs("build", "--cache-to=type=registry", dir))
+	out, err := cmd.CombinedOutput()
+	require.Error(t, err, string(out))
+	require.Contains(t, string(out), "Cache export is not supported")
+}
+
+func testBuildOCIExportNotSupported(t *testing.T, sb integration.Sandbox) {
+	if sb.Name() != "docker" {
+		t.Skip("skipping test for non-docker workers")
+	}
+
+	dir := createTestProject(t)
+	cmd := buildxCmd(sb, withArgs("build", fmt.Sprintf("--output=type=oci,dest=%s/result", dir), dir))
+	out, err := cmd.CombinedOutput()
+	require.Error(t, err, string(out))
+	require.Contains(t, string(out), "OCI exporter is not supported")
+}
+
+func testBuildMultiPlatformNotSupported(t *testing.T, sb integration.Sandbox) {
+	if sb.Name() != "docker" {
+		t.Skip("skipping test for non-docker workers")
+	}
+
+	dir := createTestProject(t)
+	cmd := buildxCmd(sb, withArgs("build", "--platform=linux/amd64,linux/arm64", dir))
+	out, err := cmd.CombinedOutput()
+	require.Error(t, err, string(out))
+	require.Contains(t, string(out), "Multi-platform build is not supported")
 }
