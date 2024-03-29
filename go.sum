@@ -310,8 +310,6 @@ github.com/mitchellh/mapstructure v1.5.0 h1:jeMsZIYE/09sWLaz43PL7Gy6RuMjD2eJVyua
 github.com/mitchellh/mapstructure v1.5.0/go.mod h1:bFUtVrKA4DC2yAKiSyO/QUcy7e+RRV2QTWOzhPopBRo=
 github.com/mitchellh/reflectwalk v1.0.2 h1:G2LzWKi524PWgd3mLHV8Y5k7s6XUvT0Gef6zxSIeXaQ=
 github.com/mitchellh/reflectwalk v1.0.2/go.mod h1:mSTlrgnPZtwu0c4WaC2kGObEpuNDbx0jmZXqmk4esnw=
-github.com/moby/buildkit v0.13.0-rc3.0.20240328152707-25bec7145b39 h1:bROKMNZ3Sj9v7N2lRzw10+mYmG/J/9Rea3y+R+TQHeI=
-github.com/moby/buildkit v0.13.0-rc3.0.20240328152707-25bec7145b39/go.mod h1:K7Ft9VUOHTwKY+xEWSIMZoj5kFA6QsLjBJymqp6S3wQ=
 github.com/moby/docker-image-spec v1.3.1 h1:jMKff3w6PgbfSa69GfNg+zN/XLhfXJGnEx3Nl2EsFP0=
 github.com/moby/docker-image-spec v1.3.1/go.mod h1:eKmb5VW8vQEh/BAr2yvVNvuiJuY6UIocYsFu/DxxRpo=
 github.com/moby/locker v1.0.1 h1:fOXqR41zeveg4fFODix+1Ch4mj/gT0NE1XJbp/epuBg=
@@ -447,6 +445,8 @@ github.com/stretchr/testify v1.8.4 h1:CcVxjf3Q8PM0mHUKJCdn+eZZtm5yQwehR5yeSVQQcU
 github.com/stretchr/testify v1.8.4/go.mod h1:sz/lmYIOXD/1dqDmKjjqLyZ2RngseejIcXlSw2iwfAo=
 github.com/theupdateframework/notary v0.7.0 h1:QyagRZ7wlSpjT5N2qQAh/pN+DVqgekv4DzbAiAiEL3c=
 github.com/theupdateframework/notary v0.7.0/go.mod h1:c9DRxcmhHmVLDay4/2fUYdISnHqbFDGRSlXPO0AhYWw=
+github.com/tonistiigi/buildkit v0.10.0-rc2.0.20240329235400-bb4762531eb2 h1:siha/HP6DJQsVLLoM/of7m+240t/27SZyrUxxZkdybQ=
+github.com/tonistiigi/buildkit v0.10.0-rc2.0.20240329235400-bb4762531eb2/go.mod h1:K7Ft9VUOHTwKY+xEWSIMZoj5kFA6QsLjBJymqp6S3wQ=
 github.com/tonistiigi/fsutil v0.0.0-20240301111122-7525a1af2bb5 h1:oZS8KCqAg62sxJkEq/Ppzqrb6EooqzWtL8Oaex7bc5c=
 github.com/tonistiigi/fsutil v0.0.0-20240301111122-7525a1af2bb5/go.mod h1:vbbYqJlnswsbJqWUcJN8fKtBhnEgldDrcagTgnBVKKM=
 github.com/tonistiigi/units v0.0.0-20180711220420-6950e57a87ea h1:SXhTLE6pb6eld/v/cCndK0AMpt1wiVFb/YYmqB3/QG0=
