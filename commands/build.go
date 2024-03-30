@@ -590,9 +590,7 @@ func buildCmd(dockerCli command.Cli, rootOpts *rootOptions, debugConfig *debug.D
 
 	flags.StringArrayVar(&options.platforms, "platform", platformsDefault, "Set target platform for build")
 
-	if confutil.IsExperimental() {
-		flags.StringVar(&options.printFunc, "print", "", "Print result of information request (e.g., outline, targets)")
-	}
+	flags.StringVar(&options.printFunc, "print", "", "Print result of information request (e.g., outline, targets)")
 
 	flags.BoolVar(&options.exportPush, "push", false, `Shorthand for "--output=type=registry"`)
 
