@@ -48,6 +48,7 @@ import (
 	"github.com/moby/buildkit/client"
 	"github.com/moby/buildkit/exporter/containerimage/exptypes"
 	"github.com/moby/buildkit/frontend/subrequests"
+	"github.com/moby/buildkit/frontend/subrequests/lint"
 	"github.com/moby/buildkit/frontend/subrequests/outline"
 	"github.com/moby/buildkit/frontend/subrequests/targets"
 	"github.com/moby/buildkit/solver/errdefs"
@@ -853,6 +854,8 @@ func printResult(f *controllerapi.PrintFunc, res map[string]string) error {
 		return printValue(targets.PrintTargets, targets.SubrequestsTargetsDefinition.Version, f.Format, res)
 	case "subrequests.describe":
 		return printValue(subrequests.PrintDescribe, subrequests.SubrequestsDescribeDefinition.Version, f.Format, res)
+	case "lint":
+		return printValue(lint.PrintLintViolations, lint.SubrequestLintDefinition.Version, f.Format, res)
 	default:
 		if dt, ok := res["result.txt"]; ok {
 			fmt.Print(dt)
