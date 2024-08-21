@@ -115,25 +115,38 @@ func chart(ctx context.Context, ref string, flags flags) error {
 
 	var avg10Data psiData
 	var avg60Data psiData
+	var absData psiData
 
-	for _, s := range sysUsage {
+	for idx, s := range sysUsage {
 		if s.CPUPressure != nil {
 			avg10Data.cpuSome = append(avg10Data.cpuSome, opts.LineData{Value: s.CPUPressure.Some.Avg10})
 			avg60Data.cpuSome = append(avg60Data.cpuSome, opts.LineData{Value: s.CPUPressure.Some.Avg60})
 			avg10Data.cpuFull = append(avg10Data.cpuFull, opts.LineData{Value: s.CPUPressure.Full.Avg10})
 			avg60Data.cpuFull = append(avg60Data.cpuFull, opts.LineData{Value: s.CPUPressure.Full.Avg60})
+			if idx > 0 {
+				absData.cpuSome = append(absData.cpuSome, opts.LineData{Value: *s.CPUPressure.Some.Total - *sysUsage[idx-1].CPUPressure.Some.Total})
+				absData.cpuFull = append(absData.cpuFull, opts.LineData{Value: *s.CPUPressure.Full.Total - *sysUsage[idx-1].CPUPressure.Full.Total})
+			}
 		}
 		if s.MemoryPressure != nil {
 			avg10Data.memorySome = append(avg10Data.memorySome, opts.LineData{Value: s.MemoryPressure.Some.Avg10})
 			avg60Data.memorySome = append(avg60Data.memorySome, opts.LineData{Value: s.MemoryPressure.Some.Avg60})
 			avg10Data.memoryFull = append(avg10Data.memoryFull, opts.LineData{Value: s.MemoryPressure.Full.Avg10})
 			avg60Data.memoryFull = append(avg60Data.memoryFull, opts.LineData{Value: s.MemoryPressure.Full.Avg60})
+			if idx > 0 {
+				absData.memorySome = append(absData.memorySome, opts.LineData{Value: *s.MemoryPressure.Some.Total - *sysUsage[idx-1].MemoryPressure.Some.Total})
+				absData.memoryFull = append(absData.memoryFull, opts.LineData{Value: *s.MemoryPressure.Full.Total - *sysUsage[idx-1].MemoryPressure.Full.Total})
+			}
 		}
 		if s.IOPressure != nil {
 			avg10Data.ioSome = append(avg10Data.ioSome, opts.LineData{Value: s.IOPressure.Some.Avg10})
 			avg60Data.ioSome = append(avg60Data.ioSome, opts.LineData{Value: s.IOPressure.Some.Avg60})
 			avg10Data.ioFull = append(avg10Data.ioFull, opts.LineData{Value: s.IOPressure.Full.Avg10})
 			avg60Data.ioFull = append(avg60Data.ioFull, opts.LineData{Value: s.IOPressure.Full.Avg60})
+			if idx > 0 {
+				absData.ioSome = append(absData.ioSome, opts.LineData{Value: *s.IOPressure.Some.Total - *sysUsage[idx-1].IOPressure.Some.Total})
+				absData.ioFull = append(absData.ioFull, opts.LineData{Value: *s.IOPressure.Full.Total - *sysUsage[idx-1].IOPressure.Full.Total})
+			}
 		}
 	}
 
@@ -214,6 +227,10 @@ func chart(ctx context.Context, ref string, flags flags) error {
 	for _, s := range sysUsage {
 		xAxis = append(xAxis, s.Timestamp_.Format("15:04:05"))
 	}
+	xAxisRelative := []string{}
+	if len(xAxis) > 0 {
+		xAxisRelative = xAxis[1:]
+	}
 
 	avg10 := charts.NewLine()
 	avg10.SetGlobalOptions(charts.WithTitleOpts(opts.Title{Title: "PSI Avg10"}))
@@ -234,6 +251,16 @@ func chart(ctx context.Context, ref string, flags flags) error {
 		AddSeries("Memory Full", avg60Data.memoryFull).
 		AddSeries("IO Some", avg60Data.ioSome).
 		AddSeries("IO Full", avg60Data.ioFull)
+
+	abs := charts.NewLine()
+	abs.SetGlobalOptions(charts.WithTitleOpts(opts.Title{Title: "PSI Absolute"}))
+	abs.SetXAxis(xAxisRelative).
+		AddSeries("CPU Some", absData.cpuSome).
+		AddSeries("CPU Full", absData.cpuFull).
+		AddSeries("Memory Some", absData.memorySome).
+		AddSeries("Memory Full", absData.memoryFull).
+		AddSeries("IO Some", absData.ioSome).
+		AddSeries("IO Full", absData.ioFull)
 
 	cpuChart := charts.NewLine()
 	cpuChart.SetGlobalOptions(charts.WithTitleOpts(opts.Title{Title: "CPU"}))
@@ -280,7 +307,7 @@ func chart(ctx context.Context, ref string, flags flags) error {
 	defer f.Close()
 
 	page := components.NewPage()
-	page.AddCharts(avg10, avg60, cpuChart, procChart, memoryChart)
+	page.AddCharts(avg10, avg60, abs, cpuChart, procChart, memoryChart)
 	page.Render(f)
 
 	return nil
