@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/docker/buildx/builder"
 	"github.com/docker/buildx/driver"
@@ -48,6 +49,10 @@ func runCreate(ctx context.Context, dockerCli command.Cli, in createOptions, arg
 	var ep string
 	if len(args) > 0 {
 		ep = args[0]
+	}
+
+	if v, ok := os.LookupEnv("BUILDX_DEFAULT_BUILDKIT_IMAGE"); ok {
+		in.driverOpts = append(in.driverOpts, "image="+v)
 	}
 
 	b, err := builder.Create(ctx, txn, dockerCli, builder.CreateOpts{
