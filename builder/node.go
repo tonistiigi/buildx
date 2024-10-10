@@ -129,6 +129,7 @@ func (b *Builder) LoadNodes(ctx context.Context, opts ...LoadNodesOption) (_ []N
 					Auth:            imageopt.Auth,
 					Platforms:       n.Platforms,
 					ContextPathHash: b.opts.contextPathHash,
+					Devices:         n.Devices,
 					DialMeta:        lno.dialMeta,
 				})
 				if err != nil {

@@ -38,6 +38,7 @@ type InitConfig struct {
 	Platforms       []specs.Platform
 	ContextPathHash string
 	DialMeta        map[string][]string
+	Devices         []string
 }
 
 var drivers map[string]Factory

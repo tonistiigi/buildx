@@ -343,6 +343,7 @@ type CreateOpts struct {
 	Use                 bool
 	Endpoint            string
 	Append              bool
+	Devices             []string
 }
 
 func Create(ctx context.Context, txn *store.Txn, dockerCli command.Cli, opts CreateOpts) (*Builder, error) {
@@ -505,7 +506,7 @@ func Create(ctx context.Context, txn *store.Txn, dockerCli command.Cli, opts Cre
 		setEp = false
 	}
 
-	if err := ng.Update(opts.NodeName, ep, opts.Platforms, setEp, opts.Append, buildkitdFlags, buildkitdConfigFile, driverOpts); err != nil {
+	if err := ng.Update(opts.NodeName, ep, opts.Platforms, setEp, opts.Append, buildkitdFlags, buildkitdConfigFile, driverOpts, opts.Devices); err != nil {
 		return nil, err
 	}
 

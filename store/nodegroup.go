@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/containerd/platforms"
@@ -29,6 +30,7 @@ type Node struct {
 	Platforms      []specs.Platform
 	DriverOpts     map[string]string
 	BuildkitdFlags []string `json:"Flags"` // keep the field name for backward compatibility
+	Devices        []string
 
 	Files map[string][]byte
 }
@@ -48,7 +50,7 @@ func (ng *NodeGroup) Leave(name string) error {
 	return nil
 }
 
-func (ng *NodeGroup) Update(name, endpoint string, platforms []string, endpointsSet bool, actionAppend bool, buildkitdFlags []string, buildkitdConfigFile string, do map[string]string) error {
+func (ng *NodeGroup) Update(name, endpoint string, platforms []string, endpointsSet bool, actionAppend bool, buildkitdFlags []string, buildkitdConfigFile string, do map[string]string, devices []string) error {
 	if ng.Dynamic {
 		return errors.New("dynamic node group does not support Update")
 	}
@@ -121,6 +123,7 @@ func (ng *NodeGroup) Update(name, endpoint string, platforms []string, endpoints
 		DriverOpts:     do,
 		BuildkitdFlags: buildkitdFlags,
 		Files:          files,
+		Devices:        devices,
 	}
 
 	ng.Nodes = append(ng.Nodes, n)
@@ -162,6 +165,7 @@ func (n *Node) Copy() *Node {
 		BuildkitdFlags: buildkitdFlags,
 		DriverOpts:     driverOpts,
 		Files:          files,
+		Devices:        slices.Clone(n.Devices),
 	}
 }
 

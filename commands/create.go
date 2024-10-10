@@ -28,6 +28,7 @@ type createOptions struct {
 	buildkitdFlags      string
 	buildkitdConfigFile string
 	bootstrap           bool
+	devices             []string
 	// upgrade      bool // perform upgrade of the driver
 }
 
@@ -66,6 +67,7 @@ func runCreate(ctx context.Context, dockerCli command.Cli, in createOptions, arg
 		Use:                 in.use,
 		Endpoint:            ep,
 		Append:              in.actionAppend,
+		Devices:             in.devices,
 	})
 	if err != nil {
 		return err
@@ -114,6 +116,7 @@ func createCmd(dockerCli command.Cli) *cobra.Command {
 	flags.StringArrayVar(&options.platform, "platform", []string{}, "Fixed platforms for current node")
 	flags.StringArrayVar(&options.driverOpts, "driver-opt", []string{}, "Options for the driver")
 	flags.StringVar(&options.buildkitdFlags, "buildkitd-flags", "", "BuildKit daemon flags")
+	flags.StringArrayVar(&options.devices, "add-device", []string{}, "Devices to create in the builder")
 
 	// we allow for both "--config" and "--buildkitd-config", although the latter is the recommended way to avoid ambiguity.
 	flags.StringVar(&options.buildkitdConfigFile, "buildkitd-config", "", "BuildKit daemon config file")

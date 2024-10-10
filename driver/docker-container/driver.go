@@ -120,7 +120,7 @@ func (d *Driver) create(ctx context.Context, l progress.SubLogger) error {
 	cfg.Cmd = getBuildkitFlags(d.InitConfig)
 
 	useInit := true // let it cleanup exited processes created by BuildKit's container API
-	return l.Wrap("creating container "+d.Name, func() error {
+	err := l.Wrap("creating container "+d.Name, func() error {
 		hc := &container.HostConfig{
 			Privileged:    true,
 			RestartPolicy: d.restartPolicy,
@@ -191,8 +191,26 @@ func (d *Driver) create(ctx context.Context, l progress.SubLogger) error {
 				return err
 			}
 		}
-		return d.wait(ctx, l)
+		if err := d.wait(ctx, l); err != nil {
+			return err
+		}
+		for _, dev := range d.Devices {
+			var hasErr error
+			l.Wrap("creating device "+dev, func() error {
+				err := d.createDevice(ctx, dev, l)
+				hasErr = err
+				return err
+			})
+			if hasErr != nil {
+				return hasErr
+			}
+		}
+		return nil
 	})
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (d *Driver) wait(ctx context.Context, l progress.SubLogger) error {
@@ -200,7 +218,7 @@ func (d *Driver) wait(ctx context.Context, l progress.SubLogger) error {
 	for {
 		bufStdout := &bytes.Buffer{}
 		bufStderr := &bytes.Buffer{}
-		if err := d.run(ctx, []string{"buildctl", "debug", "workers"}, bufStdout, bufStderr); err != nil {
+		if err := d.run(ctx, []string{"buildctl", "debug", "workers"}, nil, bufStdout, bufStderr); err != nil {
 			if try > 15 {
 				d.copyLogs(context.TODO(), l)
 				if bufStdout.Len() != 0 {
@@ -281,10 +299,18 @@ func (d *Driver) exec(ctx context.Context, cmd []string) (string, net.Conn, erro
 	return execID, resp.Conn, nil
 }
 
-func (d *Driver) run(ctx context.Context, cmd []string, stdout, stderr io.Writer) (err error) {
+func (d *Driver) run(ctx context.Context, cmd []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 	id, conn, err := d.exec(ctx, cmd)
 	if err != nil {
 		return err
+	}
+	if stdin != nil {
+		go func() {
+			io.Copy(conn, stdin)
+			if c, ok := conn.(interface{ CloseWrite() error }); ok {
+				c.CloseWrite()
+			}
+		}()
 	}
 	if _, err := stdcopy.StdCopy(stdout, stderr, conn); err != nil {
 		return err
@@ -329,7 +355,7 @@ func (d *Driver) Info(ctx context.Context) (*driver.Info, error) {
 func (d *Driver) Version(ctx context.Context) (string, error) {
 	bufStdout := &bytes.Buffer{}
 	bufStderr := &bytes.Buffer{}
-	if err := d.run(ctx, []string{"buildkitd", "--version"}, bufStdout, bufStderr); err != nil {
+	if err := d.run(ctx, []string{"buildkitd", "--version"}, nil, bufStdout, bufStderr); err != nil {
 		if bufStderr.Len() > 0 {
 			return "", errors.Wrap(err, bufStderr.String())
 		}
