@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"maps"
 	"os"
 	"slices"
@@ -41,6 +42,7 @@ import (
 	"github.com/moby/buildkit/solver/errdefs"
 	"github.com/moby/buildkit/solver/pb"
 	spb "github.com/moby/buildkit/sourcepolicy/pb"
+	"github.com/moby/buildkit/util/gitutil"
 	"github.com/moby/buildkit/util/progress/progresswriter"
 	"github.com/moby/buildkit/util/tracing"
 	"github.com/opencontainers/go-digest"
@@ -488,6 +490,7 @@ func BuildWithResultHandler(ctx context.Context, nodes []builder.Node, opts map[
 					var (
 						callRes     map[string][]byte
 						frontendErr error
+						isGitErr    bool
 					)
 					buildFunc := func(ctx context.Context, c gateway.Client) (_ *gateway.Result, retErr error) {
 						// Capture the error from this build function.
@@ -504,6 +507,9 @@ func BuildWithResultHandler(ctx context.Context, nodes []builder.Node, opts map[
 
 						res, err := solve(ctx, c, req)
 						if err != nil {
+							if isGitQueryStringError(err, c, req) {
+								isGitErr = true
+							}
 							return nil, err
 						}
 
@@ -546,6 +552,10 @@ func BuildWithResultHandler(ctx context.Context, nodes []builder.Node, opts map[
 					if errors.Is(frontendErr, ErrRestart) {
 						err = ErrRestart
 					}
+					if err != nil && isGitErr {
+						err = errors.Wrap(err, "git query string in URL seems to be not supported by the current BuildKit frontend, please upgrade to Dockerfile 1.18+ to use Git URLs with querystring")
+					}
+
 					tracing.FinishWithError(span, err)
 
 					if !so.Internal && desktop.BuildBackendEnabled() && node.Driver.HistoryAPISupported(ctx) {
@@ -1163,6 +1173,47 @@ func fallbackPrintError(err error, req gateway.SolveRequest) (gateway.SolveReque
 		return req, true
 	}
 	return req, false
+}
+
+func isGitQueryStringError(err error, cl gateway.Client, req gateway.SolveRequest) bool {
+	type repoTuple struct {
+		host, path string
+	}
+	contexts := []string{req.FrontendOpt["context"]}
+	for k, v := range req.FrontendOpt {
+		if strings.HasPrefix(k, "context:") {
+			contexts = append(contexts, v)
+		}
+	}
+	var candidates []repoTuple
+	for _, name := range contexts {
+		ref, err := gitutil.ParseURL(name)
+		if err == nil && len(ref.Query) > 0 {
+			candidates = append(candidates, repoTuple{host: ref.Host, path: ref.Path})
+		}
+	}
+
+	isGitErr := false
+	for _, c := range candidates {
+		if strings.Contains(err.Error(), c.host) && strings.Contains(err.Error(), c.path) {
+			isGitErr = true
+			break
+		}
+	}
+
+	if !isGitErr {
+		return false
+	}
+
+	caps := cl.BuildOpts().LLBCaps
+	if caps.Supports(pb.CapSourceGitSkipSubmodules) == nil { // CapSourceGitSkipSubmodules added in 0.24
+		return false
+	}
+
+	log.Printf("candidates %+v", candidates)
+	log.Printf("checking if error is git query string error: %v %#v", err, req)
+	log.Printf("isGitErr %v", isGitErr)
+	return isGitErr
 }
 
 func noCallFunc(opt map[string]Options) bool {
