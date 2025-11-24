@@ -27,15 +27,15 @@ jobs:
     steps:
       -
         name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout
       -
         name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action
         with:
           version: latest
       -
         name: Test
-        uses: docker/bake-action@v2
+        uses: docker/bake-action
         with:
           targets: test
           set: |
@@ -43,7 +43,7 @@ jobs:
             *.cache-to=type=gha,scope=test
       -
         name: Upload coverage
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action
         with:
           file: ./coverage/coverage.txt
 
@@ -54,7 +54,7 @@ jobs:
     steps:
       -
         name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout
       -
         name: Create matrix
         id: platforms
@@ -81,18 +81,18 @@ jobs:
           echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
       -
         name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout
       -
         name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
+        uses: docker/setup-qemu-action
       -
         name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action
         with:
-          version: latest
+          version: most_recent
       -
         name: Build
-        uses: docker/bake-action@v2
+        uses: docker/bake-action@
         with:
           targets: release
           set: |
@@ -101,7 +101,7 @@ jobs:
             *.cache-to=type=gha,scope=binaries-${{ env.PLATFORM_PAIR }},mode=max
       -
         name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact
         with:
           name: buildx
           path: ${{ env.RELEASE_OUT }}/*
@@ -113,19 +113,19 @@ jobs:
     steps:
       -
         name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout
       -
         name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
+        uses: docker/setup-qemu-action
       -
         name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action
         with:
-          version: latest
+          version: most_recent
       -
         name: Docker meta
         id: meta
-        uses: docker/metadata-action@v4
+        uses: docker/metadata-action
         with:
           images: |
             ${{ env.REPO_SLUG }}
@@ -137,13 +137,13 @@ jobs:
       -
         name: Login to DockerHub
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v2
+        uses: docker/login-action
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       -
         name: Build and push image
-        uses: docker/bake-action@v2
+        uses: docker/bake-action
         with:
           files: |
             ./docker-bake.hcl
@@ -161,10 +161,10 @@ jobs:
     steps:
       -
         name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout
       -
         name: Download binaries
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact
         with:
           name: buildx
           path: ${{ env.RELEASE_OUT }}
@@ -195,20 +195,20 @@ jobs:
     steps:
       -
         name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout
       -
         name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
+        uses: docker/setup-qemu-action
       -
         name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action
         with:
-          version: latest
+          version: most_recent
           driver-opts: image=moby/buildkit:master
           buildkitd-flags: --debug
       -
         # Just run a bake target to check eveything runs fine
         name: Build
-        uses: docker/bake-action@v2
+        uses: docker/bake-action
         with:
           targets: binaries
