@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	urlpkg "net/url"
+	"strings"
 	"testing"
 
 	"github.com/containerd/continuity/fs/fstest"
@@ -23,6 +24,7 @@ var policyEvalTests = []func(t *testing.T, sb integration.Sandbox){
 	testPolicyEvalPrint,
 	testPolicyEvalFields,
 	testPolicyEvalLabel,
+	testPolicyEvalProvenance,
 	testPolicyEvalHTTP,
 }
 
@@ -218,6 +220,70 @@ decision := {"allow": allow}
 	))
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
+}
+
+func testPolicyEvalProvenance(t *testing.T, sb integration.Sandbox) {
+	if buildkitTag() != "master" {
+		t.Skip("policy eval provenance integration requires TEST_BUILDKIT_TAG=master")
+	}
+	if sb.DockerAddress() == "" {
+		t.Skip("requires docker context to create dedicated docker-container builder")
+	}
+	// Base policy input support.
+	skipNoCompatBuildKit(t, sb, ">= 0.26.0-0", "policy input requires BuildKit v0.26.0+")
+
+	masterBuilder := "policy-provenance-master-" + identity.NewID()
+	createOut, err := createCmd(sb, withArgs(
+		"--name", masterBuilder,
+		"--driver", "docker-container",
+		"--bootstrap",
+		"--driver-opt", "network=host",
+		"--driver-opt", "image=docker.io/moby/buildkit:master",
+	))
+	require.NoError(t, err, createOut)
+	t.Cleanup(func() {
+		out, err := rmCmd(sb, withArgs(masterBuilder))
+		require.NoError(t, err, out)
+	})
+
+	imageRef := "moby/buildkit"
+
+	cmd := buildxCmd(sb, withArgs(
+		"--builder",
+		masterBuilder,
+		"policy",
+		"eval",
+		"--print",
+		"--fields",
+		"image.provenance",
+		"docker-image://"+imageRef,
+	))
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	expectResolveAttestations := true
+	t.Logf("buildkit image=%s dedicatedBuilder=%s expectResolveAttestations=%v", buildkitImage, masterBuilder, expectResolveAttestations)
+	if err != nil && strings.Contains(stderr.String(), "maximum attempts reached for resolving policy metadata") {
+		if expectResolveAttestations {
+			require.NoError(t, err, stderr.String())
+		}
+		t.Skip("policy eval provenance requires BuildKit ResolveAttestations support (currently master-only)")
+	}
+	require.NoError(t, err, stderr.String())
+
+	var input policy.Input
+	err = json.Unmarshal(out, &input)
+	require.NoError(t, err, string(out))
+	require.NotNil(t, input.Image)
+	require.True(t, input.Image.HasProvenance, "expected source image to report provenance")
+	if input.Image.Provenance == nil {
+		if expectResolveAttestations {
+			require.NotNil(t, input.Image.Provenance, "expected image provenance to be resolved with master BuildKit")
+		}
+		t.Skip("policy eval provenance requires BuildKit ResolveAttestations support (currently master-only)")
+	}
+	require.NotEmpty(t, input.Image.Provenance.PredicateType)
+	require.NotEmpty(t, input.Image.Provenance.Frontend)
 }
 
 func testPolicyEvalHTTP(t *testing.T, sb integration.Sandbox) {
