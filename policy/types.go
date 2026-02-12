@@ -25,6 +25,7 @@ type Env struct {
 	Labels   map[string]string  `json:"labels,omitempty"`
 	Filename string             `json:"filename,omitempty"`
 	Target   string             `json:"target,omitempty"`
+	Depth    int                `json:"depth,omitempty"`
 }
 
 type HTTP struct {
@@ -149,12 +150,15 @@ type ImageProvenance struct {
 	Hermetic     *bool                        `json:"hermetic,omitempty"`
 
 	Completeness *ImageProvenanceCompleteness `json:"completeness,omitempty"`
+	Materials    []Input                      `json:"materials,omitempty"`
+
+	materialSources []materialSource `json:"-"`
 }
 
 type ImageProvenanceConfigSource struct {
-	URI    string            `json:"uri,omitempty"`
-	Digest map[string]string `json:"digest,omitempty"`
-	Path   string            `json:"path,omitempty"`
+	URI      string `json:"uri,omitempty"`
+	Checksum string `json:"checksum,omitempty"`
+	Path     string `json:"path,omitempty"`
 }
 
 type ImageProvenanceCompleteness struct {

@@ -719,6 +719,7 @@ github.com/moby/buildkit/util/leaseutil
 github.com/moby/buildkit/util/progress
 github.com/moby/buildkit/util/progress/progressui
 github.com/moby/buildkit/util/progress/progresswriter
+github.com/moby/buildkit/util/purl
 github.com/moby/buildkit/util/resolver/config
 github.com/moby/buildkit/util/resolver/limited
 github.com/moby/buildkit/util/resolver/retryhandler
@@ -919,6 +920,9 @@ github.com/opencontainers/go-digest
 ## explicit; go 1.18
 github.com/opencontainers/image-spec/specs-go
 github.com/opencontainers/image-spec/specs-go/v1
+# github.com/package-url/packageurl-go v0.1.1
+## explicit; go 1.17
+github.com/package-url/packageurl-go
 # github.com/pelletier/go-toml/v2 v2.2.4
 ## explicit; go 1.21.0
 github.com/pelletier/go-toml/v2

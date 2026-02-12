@@ -458,16 +458,18 @@ func resolveTestInput(ctx context.Context, files []File, resolver *TestResolver,
 			if err != nil {
 				return nil, false, err
 			}
-			if hasEnv(env) {
-				inp.Env = env
-			}
+			applyEnvWithDepth(&inp, env, 0)
 			if resolver.Resolve != nil && len(policyModules) > 0 {
 				missing := missingInputRefs(policyModules, &inp)
 				resolveMissing := filterResolvableMissing(missing)
 				if len(resolveMissing) > 0 {
 					req := &gwpb.ResolveSourceMetaRequest{}
 					if err := AddUnknowns(req, resolveMissing); err == nil && (req.Image != nil || req.Git != nil) {
-						resp, err := resolver.Resolve(ctx, source, req)
+						target := source
+						if req.Source != nil {
+							target = req.Source
+						}
+						resp, err := resolver.Resolve(ctx, target, req)
 						if err != nil {
 							return nil, false, err
 						}
@@ -481,7 +483,11 @@ func resolveTestInput(ctx context.Context, files []File, resolver *TestResolver,
 		if resolver.Resolve == nil {
 			return nil, false, nil
 		}
-		resp, err := resolver.Resolve(ctx, source, next)
+		target := source
+		if next.Source != nil {
+			target = next.Source
+		}
+		resp, err := resolver.Resolve(ctx, target, next)
 		if err != nil {
 			return nil, false, err
 		}

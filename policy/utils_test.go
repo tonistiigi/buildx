@@ -31,6 +31,8 @@ func TestTrimKey(t *testing.T) {
 		{"input.git.tag[0]", "git.tag"},
 
 		{"a.b.c", "a.b"},
+		{"input.image.provenance.materials[0].git.commit", "image.provenance.materials[0].git.commit"},
+		{"input.image.provenance.materials[0].image.provenance.materials[1].image.createdTime", "image.provenance.materials[0].image.provenance.materials[1].image.createdTime"},
 	}
 
 	for _, tt := range tests {

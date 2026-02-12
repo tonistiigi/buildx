@@ -284,6 +284,46 @@ func testPolicyEvalProvenance(t *testing.T, sb integration.Sandbox) {
 	}
 	require.NotEmpty(t, input.Image.Provenance.PredicateType)
 	require.NotEmpty(t, input.Image.Provenance.Frontend)
+
+	cmd = buildxCmd(sb, withArgs(
+		"--builder",
+		masterBuilder,
+		"policy",
+		"eval",
+		"--print",
+		"--fields",
+		"image.provenance.materials[]",
+		"docker-image://"+imageRef,
+	))
+	stderr.Reset()
+	out, err = cmd.Output()
+	require.NoError(t, err, stderr.String())
+	err = json.Unmarshal(out, &input)
+	require.NoError(t, err, string(out))
+	require.NotNil(t, input.Image)
+	require.NotNil(t, input.Image.Provenance)
+	require.NotEmpty(t, input.Image.Provenance.Materials)
+
+	cmd = buildxCmd(sb, withArgs(
+		"--builder",
+		masterBuilder,
+		"policy",
+		"eval",
+		"--print",
+		"--fields",
+		"image.provenance.materials[0].image.createdTime",
+		"docker-image://"+imageRef,
+	))
+	stderr.Reset()
+	out, err = cmd.Output()
+	require.NoError(t, err, stderr.String())
+	err = json.Unmarshal(out, &input)
+	require.NoError(t, err, string(out))
+	require.NotNil(t, input.Image)
+	require.NotNil(t, input.Image.Provenance)
+	require.NotEmpty(t, input.Image.Provenance.Materials)
+	require.NotNil(t, input.Image.Provenance.Materials[0].Image)
+	require.NotEmpty(t, input.Image.Provenance.Materials[0].Image.Checksum)
 }
 
 func testPolicyEvalHTTP(t *testing.T, sb integration.Sandbox) {

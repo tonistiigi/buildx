@@ -9,7 +9,10 @@ import (
 	"net/url"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/containerd/platforms"
@@ -32,6 +35,16 @@ import (
 type Policy struct {
 	opt   Opt
 	funcs []fun
+
+	graphsMu sync.Mutex
+	graphs   map[string]*InputGraph
+	pending  map[string][]pendingResolve
+	seq      uint64
+}
+
+type pendingResolve struct {
+	sessionID    string
+	materialPath string
 }
 
 type state struct {
@@ -71,10 +84,94 @@ type File struct {
 
 func NewPolicy(opt Opt) *Policy {
 	p := &Policy{
-		opt: opt,
+		opt:     opt,
+		graphs:  make(map[string]*InputGraph),
+		pending: make(map[string][]pendingResolve),
 	}
 	p.initBuiltinFuncs()
 	return p
+}
+
+func (p *Policy) nextGraphSessionID() string {
+	id := atomic.AddUint64(&p.seq, 1)
+	return "s" + strconv.FormatUint(id, 10)
+}
+
+func (p *Policy) getGraph(id string) *InputGraph {
+	if id == "" {
+		return nil
+	}
+	p.graphsMu.Lock()
+	defer p.graphsMu.Unlock()
+	return p.graphs[id]
+}
+
+func (p *Policy) setGraph(id string, g *InputGraph) {
+	if id == "" || g == nil {
+		return
+	}
+	p.graphsMu.Lock()
+	defer p.graphsMu.Unlock()
+	p.graphs[id] = g
+}
+
+func (p *Policy) deleteGraph(id string) {
+	if id == "" {
+		return
+	}
+	p.graphsMu.Lock()
+	defer p.graphsMu.Unlock()
+	delete(p.graphs, id)
+	for k, list := range p.pending {
+		out := list[:0]
+		for _, item := range list {
+			if item.sessionID != id {
+				out = append(out, item)
+			}
+		}
+		if len(out) == 0 {
+			delete(p.pending, k)
+			continue
+		}
+		p.pending[k] = out
+	}
+}
+
+func pendingSourceKey(src *pb.SourceOp) string {
+	if src == nil {
+		return ""
+	}
+	return cloneSourceOp(src).Identifier
+}
+
+func (p *Policy) addPending(src *pb.SourceOp, pr pendingResolve) {
+	key := pendingSourceKey(src)
+	if key == "" || pr.sessionID == "" {
+		return
+	}
+	p.graphsMu.Lock()
+	defer p.graphsMu.Unlock()
+	p.pending[key] = append(p.pending[key], pr)
+}
+
+func (p *Policy) popPending(src *pb.SourceOp) (pendingResolve, bool) {
+	key := pendingSourceKey(src)
+	if key == "" {
+		return pendingResolve{}, false
+	}
+	p.graphsMu.Lock()
+	defer p.graphsMu.Unlock()
+	list := p.pending[key]
+	if len(list) == 0 {
+		return pendingResolve{}, false
+	}
+	item := list[0]
+	if len(list) == 1 {
+		delete(p.pending, key)
+	} else {
+		p.pending[key] = list[1:]
+	}
+	return item, true
 }
 
 func (p *Policy) log(level logrus.Level, format string, v ...any) {
@@ -88,7 +185,6 @@ func (p *Policy) CheckPolicy(ctx context.Context, req *policysession.CheckPolicy
 	if req.Source == nil || req.Source.Source == nil {
 		return nil, nil, errors.Errorf("no source info in request")
 	}
-	src := req.Source
 	var platform *ocispecs.Platform
 	if req.Platform != nil {
 		pl, err := platformFromReq(req)
@@ -100,11 +196,37 @@ func (p *Policy) CheckPolicy(ctx context.Context, req *policysession.CheckPolicy
 		platform = p.opt.DefaultPlatform
 	}
 
-	inp, unknowns, err := SourceToInputWithLogger(ctx, p.opt.VerifierProvider, src, platform, p.opt.Log)
-	if err != nil {
-		return nil, nil, errors.Wrapf(err, "failed to convert source to policy input")
+	pending, hasPending := p.popPending(req.Source.Source)
+	sessionID := ""
+	materialPath := ""
+	graph := (*InputGraph)(nil)
+	if hasPending {
+		sessionID = pending.sessionID
+		materialPath = pending.materialPath
+		graph = p.getGraph(sessionID)
 	}
-	inp.Env = p.opt.Env
+	if graph == nil {
+		var err error
+		graph, err = NewInputGraph(ctx, p.opt.VerifierProvider, req.Source, platform, p.opt.Log)
+		if err != nil {
+			return nil, nil, errors.Wrapf(err, "failed to convert source to policy input")
+		}
+		sessionID = p.nextGraphSessionID()
+		p.setGraph(sessionID, graph)
+	} else {
+		if err := graph.ApplyResponse(materialPath, req.Source); err != nil {
+			p.deleteGraph(sessionID)
+			return nil, nil, err
+		}
+		if err := graph.Rebuild(ctx); err != nil {
+			p.deleteGraph(sessionID)
+			return nil, nil, err
+		}
+	}
+
+	inp := graph.Input()
+	unknowns := graph.Unknowns()
+	applyEnvWithDepth(&inp, p.opt.Env, 0)
 
 	caps := &ast.Capabilities{
 		Builtins: builtins(),
@@ -227,14 +349,22 @@ func (p *Policy) CheckPolicy(ctx context.Context, req *policysession.CheckPolicy
 		unk = append(unk, runtimeUnknownInputRefs(st)...)
 
 		if len(unk) > 0 {
-			next := &gwpb.ResolveSourceMetaRequest{
-				Source:   req.Source.Source,
-				Platform: req.Platform,
-			}
-			if err := AddUnknownsWithLogger(p.opt.Log, next, unk); err != nil {
+			materialPath, next, err := graph.PlanResolveRequest(unk)
+			if err != nil {
+				p.deleteGraph(sessionID)
 				return nil, nil, err
 			}
-			if next.Image != nil || next.Git != nil || hasHTTPUnknowns(unk) {
+			if next != nil && (next.Image != nil || next.Git != nil || hasHTTPUnknowns(unk)) {
+				if next.Source == nil {
+					next.Source = cloneSourceOp(req.Source.Source)
+				}
+				p.addPending(next.Source, pendingResolve{
+					sessionID:    sessionID,
+					materialPath: materialPath,
+				})
+				if next.Platform == nil {
+					next.Platform = req.Platform
+				}
 				p.log(logrus.InfoLevel, "policy decision for source %s: resolve missing fields %+v", sourceName(req), summarizeUnknownsForLog(unk))
 				return nil, next, nil
 			}
@@ -287,15 +417,18 @@ func (p *Policy) CheckPolicy(ctx context.Context, req *policysession.CheckPolicy
 
 	if resp.Action == moby_buildkit_v1_sourcepolicy.PolicyAction_ALLOW {
 		if len(st.ImagePins) > 1 {
+			p.deleteGraph(sessionID)
 			return nil, nil, errors.Errorf("multiple image pins set to %s: %v", sourceName(req), st.ImagePins)
 		}
 		if len(st.ImagePins) == 1 {
-			newSrc, err := addPinToImage(src.Source, slices.Collect(maps.Keys(st.ImagePins))[0])
+			newSrc, err := addPinToImage(req.Source.Source, slices.Collect(maps.Keys(st.ImagePins))[0])
 			if err != nil {
+				p.deleteGraph(sessionID)
 				return nil, nil, errors.Wrapf(err, "failed to add image pin to source")
 			}
 			p.log(logrus.InfoLevel, "policy decision for source %s: convert to %s", sourceName(req), newSrc.Identifier)
 
+			p.deleteGraph(sessionID)
 			return &policysession.DecisionResponse{
 				Action: moby_buildkit_v1_sourcepolicy.PolicyAction_CONVERT,
 				Update: newSrc,
@@ -308,6 +441,7 @@ func (p *Policy) CheckPolicy(ctx context.Context, req *policysession.CheckPolicy
 		p.log(logrus.InfoLevel, " - %s", dm.Message)
 	}
 
+	p.deleteGraph(sessionID)
 	return resp, nil, nil
 }
 
@@ -539,7 +673,7 @@ func SourceToInputWithLogger(ctx context.Context, getVerifier PolicyVerifierProv
 			inp.Image.Tag = tagged.Tag()
 		}
 		if platform == nil {
-			return inp, nil, errors.Errorf("platform required for image source")
+			platform = &ocispecs.Platform{}
 		}
 		inp.Image.Platform = platforms.Format(*platform)
 		inp.Image.OS = platform.OS
@@ -547,7 +681,7 @@ func SourceToInputWithLogger(ctx context.Context, getVerifier PolicyVerifierProv
 		inp.Image.Variant = platform.Variant
 
 		configFields := []string{
-			"labels", "user", "volumes", "workingDir", "env",
+			"createdTime", "labels", "user", "volumes", "workingDir", "env",
 		}
 
 		if src.Image == nil {
@@ -563,7 +697,9 @@ func SourceToInputWithLogger(ctx context.Context, getVerifier PolicyVerifierProv
 				if err := json.Unmarshal(cfg, &img); err != nil {
 					return inp, nil, errors.Wrapf(err, "failed to unmarshal image config")
 				}
-				inp.Image.CreatedTime = img.Created.Format(time.RFC3339)
+				if img.Created != nil {
+					inp.Image.CreatedTime = img.Created.Format(time.RFC3339)
+				}
 				inp.Image.Labels = img.Config.Labels
 				inp.Image.Env = img.Config.Env
 				inp.Image.User = img.Config.User
@@ -577,7 +713,7 @@ func SourceToInputWithLogger(ctx context.Context, getVerifier PolicyVerifierProv
 			}
 
 			if ac := src.Image.AttestationChain; ac != nil {
-				if prv, err := parseProvenance(ac); err != nil {
+				if prv, err := parseProvenance(ac, logf); err != nil {
 					if logf != nil {
 						logf(logrus.DebugLevel, fmt.Sprintf("failed to parse image provenance: %v", err))
 					}
@@ -654,7 +790,7 @@ func AddUnknownsWithLogger(logf func(logrus.Level, string), req *gwpb.ResolveSou
 		}
 
 		switch u {
-		case "image.checksum", "image.labels", "image.user", "image.volumes", "image.workingDir", "image.env":
+		case "image.checksum", "image.createdTime", "image.labels", "image.user", "image.volumes", "image.workingDir", "image.env":
 			if req.Image == nil {
 				req.Image = &gwpb.ResolveSourceImageRequest{}
 			}
@@ -773,7 +909,7 @@ func appendUnique(dst []string, values ...string) []string {
 
 func hasHTTPUnknowns(unk []string) bool {
 	for _, u := range unk {
-		if strings.HasPrefix(u, "http.") {
+		if strings.HasPrefix(u, "http.") || strings.Contains(u, ".http.") {
 			return true
 		}
 	}
@@ -782,6 +918,9 @@ func hasHTTPUnknowns(unk []string) bool {
 
 func trimKey(s string) string {
 	s = strings.TrimPrefix(s, "input.")
+	if strings.Contains(s, ".materials[") || strings.HasPrefix(s, "image.provenance.materials[") {
+		return s
+	}
 
 	const (
 		dot = '.'

@@ -149,7 +149,28 @@ func TestSourceToInputWithLogger(t *testing.T) {
 					Identifier: "docker-image://alpine:latest",
 				},
 			},
-			expErrMsg: "platform required for image source",
+			expInput: Input{
+				Image: &Image{
+					Ref:      "docker.io/library/alpine:latest",
+					Host:     "docker.io",
+					Repo:     "alpine",
+					FullRepo: "docker.io/library/alpine",
+					Tag:      "latest",
+					Platform: "unknown",
+				},
+			},
+			expUnk: []string{
+				"input.image.checksum",
+				"input.image.createdTime",
+				"input.image.labels",
+				"input.image.user",
+				"input.image.volumes",
+				"input.image.workingDir",
+				"input.image.env",
+				"input.image.hasProvenance",
+				"input.image.provenance",
+				"input.image.signatures",
+			},
 		},
 		{
 			name: "image-source-without-resolved-metadata",
@@ -173,6 +194,7 @@ func TestSourceToInputWithLogger(t *testing.T) {
 			},
 			expUnk: []string{
 				"input.image.checksum",
+				"input.image.createdTime",
 				"input.image.labels",
 				"input.image.user",
 				"input.image.volumes",
@@ -205,6 +227,7 @@ func TestSourceToInputWithLogger(t *testing.T) {
 				},
 			},
 			expUnk: []string{
+				"input.image.createdTime",
 				"input.image.labels",
 				"input.image.user",
 				"input.image.volumes",
@@ -258,6 +281,7 @@ func TestSourceToInputWithLogger(t *testing.T) {
 				},
 			},
 			expUnk: []string{
+				"input.image.createdTime",
 				"input.image.labels",
 				"input.image.user",
 				"input.image.volumes",
@@ -314,6 +338,7 @@ func TestSourceToInputWithLogger(t *testing.T) {
 				t.Helper()
 				require.NoError(t, err)
 				require.Equal(t, []string{
+					"input.image.createdTime",
 					"input.image.labels",
 					"input.image.user",
 					"input.image.volumes",
@@ -363,6 +388,7 @@ func TestSourceToInputWithLogger(t *testing.T) {
 				t.Helper()
 				require.NoError(t, err)
 				require.Equal(t, []string{
+					"input.image.createdTime",
 					"input.image.labels",
 					"input.image.user",
 					"input.image.volumes",
@@ -387,7 +413,7 @@ func TestSourceToInputWithLogger(t *testing.T) {
 				require.NotNil(t, inp.Image.Provenance.ConfigSource)
 				require.Equal(t, "https://github.com/moby/buildkit.git#refs/tags/v0.21.0", inp.Image.Provenance.ConfigSource.URI)
 				require.Equal(t, "Dockerfile", inp.Image.Provenance.ConfigSource.Path)
-				require.Equal(t, map[string]string{"sha1": "52b004d2afe20c5c80967cc1784e718b52d69dae"}, inp.Image.Provenance.ConfigSource.Digest)
+				require.Equal(t, "sha1:52b004d2afe20c5c80967cc1784e718b52d69dae", inp.Image.Provenance.ConfigSource.Checksum)
 				require.NotNil(t, inp.Image.Provenance.Completeness)
 				require.NotNil(t, inp.Image.Provenance.Completeness.Parameters)
 				require.True(t, *inp.Image.Provenance.Completeness.Parameters)
@@ -417,6 +443,7 @@ func TestSourceToInputWithLogger(t *testing.T) {
 				t.Helper()
 				require.NoError(t, err)
 				require.Equal(t, []string{
+					"input.image.createdTime",
 					"input.image.labels",
 					"input.image.user",
 					"input.image.volumes",
@@ -441,7 +468,7 @@ func TestSourceToInputWithLogger(t *testing.T) {
 				require.NotNil(t, inp.Image.Provenance.ConfigSource)
 				require.Equal(t, "https://github.com/moby/buildkit.git#refs/heads/master", inp.Image.Provenance.ConfigSource.URI)
 				require.Equal(t, "Dockerfile", inp.Image.Provenance.ConfigSource.Path)
-				require.Equal(t, map[string]string{"sha1": "9836771d0c5b21cbc7f0c38b81be39c42fc46b7b"}, inp.Image.Provenance.ConfigSource.Digest)
+				require.Equal(t, "sha1:9836771d0c5b21cbc7f0c38b81be39c42fc46b7b", inp.Image.Provenance.ConfigSource.Checksum)
 				require.NotNil(t, inp.Image.Provenance.Completeness)
 				require.NotNil(t, inp.Image.Provenance.Completeness.Parameters)
 				require.True(t, *inp.Image.Provenance.Completeness.Parameters)
@@ -482,6 +509,7 @@ func TestSourceToInputWithLogger(t *testing.T) {
 				},
 			},
 			expUnk: []string{
+				"input.image.createdTime",
 				"input.image.labels",
 				"input.image.user",
 				"input.image.volumes",

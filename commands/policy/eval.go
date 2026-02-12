@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/containerd/errdefs"
@@ -110,43 +111,38 @@ func runEval(ctx context.Context, dockerCli command.Cli, source string, opts eva
 	verifier := policy.SignatureVerifier(confutil.NewConfig(dockerCli))
 
 	if opts.printOutput {
-		srcReq := &gwpb.ResolveSourceMetaResponse{
+		graph, err := policy.NewInputGraph(ctx, verifier, &gwpb.ResolveSourceMetaResponse{
 			Source: src,
+		}, &p, nil)
+		if err != nil {
+			return err
 		}
 		maxAttempts := 5
-		var unknowns []string
 		var lastUnknowns []string
 		var trimmedUnknowns []string
 		var input policy.Input
-		var doneInvalidCheck bool
 		var invalidFields []string
 		for {
 			maxAttempts--
 			if maxAttempts <= 0 {
 				return errors.New("maximum attempts reached for resolving source metadata")
 			}
-			input, unknowns, err = policy.SourceToInput(ctx, verifier, srcReq, &p)
-			if err != nil {
-				return err
-			}
+			input = graph.Input()
+			unknowns := graph.Unknowns()
 			trimmedUnknowns = trimInputPrefixSlice(unknowns)
 			if lastUnknowns != nil && slices.Equal(trimmedUnknowns, lastUnknowns) {
 				break
 			}
 			lastUnknowns = slices.Clone(trimmedUnknowns)
-			toReload := []string{}
-			for _, f := range opts.fields {
-				if slices.Contains(trimmedUnknowns, f) {
-					toReload = append(toReload, f)
-				} else if !doneInvalidCheck {
-					invalidFields = append(invalidFields, f)
-				}
-			}
-			doneInvalidCheck = true
+			toReload, invalid := selectReloadFields(opts.fields, trimmedUnknowns)
+			invalidFields = invalid
 			if len(toReload) > 0 {
-				req := &gwpb.ResolveSourceMetaRequest{}
-				if err := policy.AddUnknowns(req, toReload); err != nil {
+				materialPath, req, err := graph.PlanResolveRequest(toReload)
+				if err != nil {
 					return err
+				}
+				if req == nil {
+					break
 				}
 				gwClient, err := openClient(ctx)
 				if err != nil {
@@ -154,21 +150,34 @@ func runEval(ctx context.Context, dockerCli command.Cli, source string, opts eva
 				}
 
 				opt := sourceResolverOpt(req, &p)
-				resp, err := gwClient.ResolveSourceMetadata(ctx, src, opt)
+				target := src
+				if req.Source != nil {
+					target = req.Source
+				}
+				resp, err := gwClient.ResolveSourceMetadata(ctx, target, opt)
 				if err != nil {
 					return err
 				}
-				srcReq = buildSourceMetaResponse(resp)
+				if err := graph.ApplyResponse(materialPath, buildSourceMetaResponse(resp)); err != nil {
+					return err
+				}
+				if err := graph.Rebuild(ctx); err != nil {
+					return err
+				}
 				continue
 			}
 			break
 		}
 
 		if len(invalidFields) > 0 {
+			invalidFields = filterInvalidFields(input, invalidFields)
+		}
+		if len(invalidFields) > 0 {
 			logrus.Warnf("invalid fields: %v", strings.Join(invalidFields, ", "))
 		}
-		if len(trimmedUnknowns) > 0 {
-			logrus.Infof("unresolved fields: %v", strings.Join(trimmedUnknowns, ", "))
+		reportedUnknowns := summarizeEvalUnknowns(input, trimmedUnknowns, opts.fields)
+		if len(reportedUnknowns) > 0 {
+			logrus.Infof("unresolved fields: %v", strings.Join(reportedUnknowns, ", "))
 		}
 
 		dt, err := json.MarshalIndent(input, "", "  ")
@@ -245,7 +254,11 @@ func runEval(ctx context.Context, dockerCli command.Cli, source string, opts eva
 			return err
 		}
 		opt := sourceResolverOpt(next, &p)
-		resp, err := gwClient.ResolveSourceMetadata(ctx, src, opt)
+		target := src
+		if next.Source != nil {
+			target = next.Source
+		}
+		resp, err := gwClient.ResolveSourceMetadata(ctx, target, opt)
 		if err != nil {
 			return err
 		}
@@ -287,6 +300,14 @@ func toGatewayAttestationChain(chain *sourceresolver.AttestationChain) *gwpb.Att
 }
 
 func sourceResolverOpt(req *gwpb.ResolveSourceMetaRequest, platform *ocispecs.Platform) sourceresolver.Opt {
+	effectivePlatform := platform
+	if req != nil && req.Platform != nil {
+		effectivePlatform = &ocispecs.Platform{
+			OS:           req.Platform.OS,
+			Architecture: req.Platform.Architecture,
+			Variant:      req.Platform.Variant,
+		}
+	}
 	opt := sourceresolver.Opt{
 		LogName:        req.LogName,
 		SourcePolicies: req.SourcePolicies,
@@ -296,7 +317,7 @@ func sourceResolverOpt(req *gwpb.ResolveSourceMetaRequest, platform *ocispecs.Pl
 			NoConfig:            req.Image.NoConfig,
 			AttestationChain:    req.Image.AttestationChain,
 			ResolveAttestations: slices.Clone(req.Image.ResolveAttestations),
-			Platform:            platform,
+			Platform:            effectivePlatform,
 			ResolveMode:         req.ResolveMode,
 		}
 	}
@@ -352,6 +373,186 @@ func trimInputPrefixSlice(fields []string) []string {
 		out = append(out, strings.TrimPrefix(field, "input."))
 	}
 	return out
+}
+
+func selectReloadFields(fields []string, unknowns []string) ([]string, []string) {
+	if len(fields) == 0 {
+		return nil, nil
+	}
+	var reload []string
+	var invalid []string
+	for _, field := range fields {
+		if slices.Contains(unknowns, field) {
+			reload = appendUnique(reload, field)
+			continue
+		}
+		if ancestor := findUnknownAncestor(field, unknowns); ancestor != "" {
+			reload = appendUnique(reload, ancestor)
+			continue
+		}
+		invalid = append(invalid, field)
+	}
+	return reload, invalid
+}
+
+func appendUnique(in []string, value string) []string {
+	if slices.Contains(in, value) {
+		return in
+	}
+	return append(in, value)
+}
+
+func findUnknownAncestor(field string, unknowns []string) string {
+	for _, unknown := range unknowns {
+		if field == unknown {
+			return unknown
+		}
+		if strings.HasPrefix(field, unknown+".") {
+			return unknown
+		}
+		if strings.HasPrefix(field, unknown+"[") {
+			return unknown
+		}
+	}
+	return ""
+}
+
+func filterInvalidFields(input policy.Input, fields []string) []string {
+	if len(fields) == 0 {
+		return nil
+	}
+	dt, err := json.Marshal(input)
+	if err != nil {
+		return fields
+	}
+	var root any
+	if err := json.Unmarshal(dt, &root); err != nil {
+		return fields
+	}
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		if !pathExists(root, f) {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func pathExists(root any, path string) bool {
+	cur := root
+	for seg := range strings.SplitSeq(path, ".") {
+		name, idxs, ok := parsePathSegment(seg)
+		if !ok {
+			return false
+		}
+		if name != "" {
+			obj, ok := cur.(map[string]any)
+			if !ok {
+				return false
+			}
+			next, ok := obj[name]
+			if !ok {
+				return false
+			}
+			cur = next
+		}
+		for _, idx := range idxs {
+			arr, ok := cur.([]any)
+			if !ok || idx < 0 || idx >= len(arr) {
+				return false
+			}
+			cur = arr[idx]
+		}
+	}
+	return true
+}
+
+func parsePathSegment(seg string) (string, []int, bool) {
+	if seg == "" {
+		return "", nil, false
+	}
+	name, rest, hasIdx := strings.Cut(seg, "[")
+	if !hasIdx {
+		name = seg
+		rest = ""
+	}
+	var idxs []int
+	if hasIdx {
+		rest = "[" + rest
+	}
+	for len(rest) > 0 {
+		if !strings.HasPrefix(rest, "[") {
+			return "", nil, false
+		}
+		end := strings.IndexByte(rest, ']')
+		if end <= 1 {
+			return "", nil, false
+		}
+		idx, err := strconv.Atoi(rest[1:end])
+		if err != nil {
+			return "", nil, false
+		}
+		idxs = append(idxs, idx)
+		rest = rest[end+1:]
+	}
+	return name, idxs, true
+}
+
+func summarizeEvalUnknowns(input policy.Input, unknowns, requested []string) []string {
+	if len(unknowns) == 0 {
+		return nil
+	}
+	if len(requested) > 0 {
+		var out []string
+		for _, field := range requested {
+			if pathExistsInInput(input, field) {
+				continue
+			}
+			if slices.Contains(unknowns, field) {
+				out = appendUnique(out, field)
+				continue
+			}
+			if ancestor := findUnknownAncestor(field, unknowns); ancestor != "" {
+				out = appendUnique(out, ancestor)
+			}
+		}
+		return out
+	}
+
+	var out []string
+	for _, u := range unknowns {
+		out = appendUnique(out, summarizeUnknownField(u))
+	}
+	return out
+}
+
+func summarizeUnknownField(field string) string {
+	if strings.Contains(field, ".materials[") || strings.HasPrefix(field, "image.provenance.materials[") {
+		return "image.provenance.materials"
+	}
+	if strings.HasPrefix(field, "image.signatures") {
+		return "image.signatures"
+	}
+	if strings.HasPrefix(field, "image.provenance") {
+		return "image.provenance"
+	}
+	parts := strings.Split(field, ".")
+	if len(parts) > 1 {
+		return strings.Join(parts[:2], ".")
+	}
+	return field
+}
+
+func pathExistsInInput(input policy.Input, path string) bool {
+	dt, err := json.Marshal(input)
+	if err != nil {
+		return false
+	}
+	var root any
+	if err := json.Unmarshal(dt, &root); err != nil {
+		return false
+	}
+	return pathExists(root, path)
 }
 
 func evalDecisionError(decision *policysession.DecisionResponse) error {
