@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/fs"
 	"maps"
 	"os"
 	"path"
@@ -495,90 +494,11 @@ func toSolveOpt(ctx context.Context, np *noderesolver.ResolvedNode, multiDriver 
 		releaseLoad()
 	})
 
-	if opt.Inputs.policy == nil {
-		if len(opt.Policy) > 0 {
-			return nil, nil, errors.New("policy file specified but no policy FS in build context")
-		}
-	} else {
-		env := policy.Env{}
-		for k, v := range opt.BuildArgs {
-			if env.Args == nil {
-				env.Args = map[string]*string{}
-			}
-			env.Args[k] = &v
-		}
-		env.Filename = path.Base(opt.Inputs.DockerfilePath)
-		env.Target = opt.Target
-		env.Labels = opt.Labels
-
-		popts, err := withPolicyConfig(*opt.Inputs.policy, opt.Policy)
-		if err != nil {
-			return nil, nil, err
-		}
-		var sourceResolver *sourcemeta.Resolver
-		if len(popts) > 0 {
-			c, err := np.Client(ctx)
-			if err != nil {
-				return nil, nil, err
-			}
-			sourceResolver = sourcemeta.NewResolver(c, sourcemeta.WithProgressWriter(pw))
-			defers = append(defers, func(error) {
-				_ = sourceResolver.Close()
-			})
-		}
-		var policyFiles []string
-		for _, popt := range popts {
-			for _, f := range popt.Files {
-				if f.Filename != "" {
-					policyFiles = append(policyFiles, f.Filename)
-				}
-			}
-		}
-		var policyLogger *policyProgressLogger
-		if len(policyFiles) > 0 {
-			policyLogger = newPolicyProgressLogger(pw, fmt.Sprintf("loading policies %s", strings.Join(policyFiles, ", ")))
-		}
-		var policies []*policy.Policy
-		if policyLogger != nil {
-			defers = append(defers, func(inErr error) {
-				if len(policysession.DenyMessages(inErr)) > 0 || isPolicyEvaluationError(policies, inErr) {
-					policyLogger.Close(inErr)
-					return
-				}
-				policyLogger.Close(nil)
-			})
-		}
-		var cbs []policysession.PolicyCallback
-		for _, popt := range popts {
-			policyLevel := logrus.GetLevel()
-			if popt.LogLevel != nil {
-				policyLevel = *popt.LogLevel
-			}
-			logf := func(level logrus.Level, msg string) {
-				if policyLogger == nil || level > policyLevel {
-					return
-				}
-				policyLogger.Log(msg)
-			}
-			p := policy.NewPolicy(policy.Opt{
-				Files:            popt.Files,
-				Env:              env,
-				Log:              logf,
-				FS:               opt.Inputs.policy.FS,
-				VerifierProvider: policy.SignatureVerifier(cfg),
-				DefaultPlatform:  defaultPlatform(bopts),
-				SourceResolver:   sourceResolver,
-			})
-			policies = append(policies, p)
-			cbs = append(cbs, p.CheckPolicy)
-			if popt.Strict {
-				if bopts.LLBCaps.Supports(pb.CapSourcePolicySession) != nil {
-					return nil, nil, errors.New("strict policy is not supported by the current BuildKit daemon, please upgrade to version v0.27+")
-				}
-			}
-		}
-		so.SourcePolicyProvider = policysession.NewPolicyProvider(policy.MultiPolicyCallback(cbs...))
+	policyDefers, err := configureSourcePolicy(ctx, np, opt, cfg, bopts, &so, pw)
+	if err != nil {
+		return nil, nil, err
 	}
+	defers = append(defers, policyDefers...)
 
 	// add node identifier to shared key if one was specified
 	nodeID := cfg.TryNodeIdentifier()
@@ -667,6 +587,114 @@ func toSolveOpt(ctx context.Context, np *noderesolver.ResolvedNode, multiDriver 
 	return &so, releaseF, nil
 }
 
+func configureSourcePolicy(ctx context.Context, np *noderesolver.ResolvedNode, opt *Options, cfg *confutil.Config, bopts gateway.BuildOpts, so *client.SolveOpt, pw progress.Writer) (defers []func(error), err error) {
+	if opt.Inputs.policy == nil {
+		if len(opt.Policy) > 0 {
+			return nil, errors.New("policy file specified but no policy FS in build context")
+		}
+		so.SourcePolicyProvider = nil
+		return nil, nil
+	}
+
+	env := policy.Env{}
+	for k, v := range opt.BuildArgs {
+		if env.Args == nil {
+			env.Args = map[string]*string{}
+		}
+		env.Args[k] = &v
+	}
+	env.Filename = path.Base(opt.Inputs.DockerfilePath)
+	env.Target = opt.Target
+	env.Labels = opt.Labels
+
+	popts, err := withPolicyConfig(*opt.Inputs.policy, opt.Policy)
+	if err != nil {
+		return nil, err
+	}
+	if len(popts) == 0 {
+		so.SourcePolicyProvider = nil
+		return nil, nil
+	}
+
+	c, err := np.Client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	sourceResolver := sourcemeta.NewResolver(c, sourcemeta.WithProgressWriter(pw))
+	defers = []func(error){
+		func(error) {
+			_ = sourceResolver.Close()
+		},
+	}
+	defer func() {
+		if err == nil {
+			return
+		}
+		for _, f := range defers {
+			f(err)
+		}
+		defers = nil
+	}()
+
+	loadedOpts, err := resolvePolicyOpts(ctx, popts, sourceResolver)
+	if err != nil {
+		return nil, err
+	}
+	var policyFiles []string
+	for _, popt := range loadedOpts {
+		for _, f := range popt.Files {
+			if f.Filename != "" {
+				policyFiles = append(policyFiles, f.Filename)
+			}
+		}
+	}
+	var policyLogger *policyProgressLogger
+	if len(policyFiles) > 0 {
+		policyLogger = newPolicyProgressLogger(pw, fmt.Sprintf("loading policies %s", strings.Join(policyFiles, ", ")))
+	}
+	var policies []*policy.Policy
+	if policyLogger != nil {
+		defers = append(defers, func(inErr error) {
+			if len(policysession.DenyMessages(inErr)) > 0 || isPolicyEvaluationError(policies, inErr) {
+				policyLogger.Close(inErr)
+				return
+			}
+			policyLogger.Close(nil)
+		})
+	}
+	var cbs []policysession.PolicyCallback
+	for _, popt := range loadedOpts {
+		policyLevel := logrus.GetLevel()
+		if popt.LogLevel != nil {
+			policyLevel = *popt.LogLevel
+		}
+		logf := func(level logrus.Level, msg string) {
+			if policyLogger == nil || level > policyLevel {
+				return
+			}
+			policyLogger.Log(msg)
+		}
+		p := policy.NewPolicy(policy.Opt{
+			Files:            popt.Files,
+			Env:              env,
+			Log:              logf,
+			FS:               popt.FS,
+			VerifierProvider: policy.SignatureVerifier(cfg),
+			DefaultPlatform:  defaultPlatform(bopts),
+			SourceResolver:   sourceResolver,
+		})
+		policies = append(policies, p)
+		cbs = append(cbs, p.CheckPolicy)
+		if popt.Strict {
+			if bopts.LLBCaps.Supports(pb.CapSourcePolicySession) != nil {
+				return nil, errors.New("strict policy is not supported by the current BuildKit daemon, please upgrade to version v0.27+")
+			}
+		}
+	}
+	so.SourcePolicyProvider = policysession.NewPolicyProvider(policy.MultiPolicyCallback(cbs...))
+	return defers, nil
+}
+
 func loadInputs(ctx context.Context, d *driver.DriverHandle, inp *Inputs, pw progress.Writer, target *client.SolveOpt) (func(), error) {
 	if inp.ContextPath == "" {
 		return nil, errors.New("please specify build context (e.g. \".\" for the current directory)")
@@ -678,6 +706,8 @@ func loadInputs(ctx context.Context, d *driver.DriverHandle, inp *Inputs, pw pro
 		err               error
 		dockerfileReader  io.ReadCloser
 		contextDir        string
+		remoteContext     bool
+		remotePolicyState *llb.State
 		dockerfileDir     string
 		dockerfileName    = inp.DockerfilePath
 		dockerfileSrcName = inp.DockerfilePath
@@ -687,6 +717,7 @@ func loadInputs(ctx context.Context, d *driver.DriverHandle, inp *Inputs, pw pro
 
 	switch {
 	case inp.ContextState != nil:
+		remotePolicyState = inp.ContextState
 		if target.FrontendInputs == nil {
 			target.FrontendInputs = make(map[string]llb.State)
 		}
@@ -745,6 +776,7 @@ func loadInputs(ctx context.Context, d *driver.DriverHandle, inp *Inputs, pw pro
 			dockerfileName = filepath.Base(inp.DockerfilePath)
 		}
 	case urlutil.IsRemoteURL(inp.ContextPath):
+		remoteContext = true
 		if inp.DockerfilePath == "-" {
 			dockerfileReader = inp.InStream.NewReadCloser()
 		} else if filepath.IsAbs(inp.DockerfilePath) {
@@ -758,6 +790,7 @@ func loadInputs(ctx context.Context, d *driver.DriverHandle, inp *Inputs, pw pro
 			return nil, err
 		}
 		if st, ok := target.FrontendInputs["context"]; ok {
+			remotePolicyState = &st
 			if dockerfileReader == nil && !filepath.IsAbs(inp.DockerfilePath) {
 				target.FrontendInputs["dockerfile"] = st
 			}
@@ -801,22 +834,11 @@ func loadInputs(ctx context.Context, d *driver.DriverHandle, inp *Inputs, pw pro
 	}
 
 	p := &policyOpt{
-		FS: func() (fs.StatFS, func() error, error) {
-			if contextDir == "" {
-				return nil, nil, errors.Errorf("unimplemented, cannot use policy file without a local build context")
-			}
-			root, err := os.OpenRoot(contextDir)
-			if err != nil {
-				return nil, nil, errors.Wrapf(err, "failed to open root for policy file %s.rego", dockerfileName)
-			}
-			baseFS := root.FS()
-			statFS, ok := baseFS.(fs.StatFS)
-			if !ok {
-				root.Close()
-				return nil, nil, errors.Errorf("invalid root FS type %T", baseFS)
-			}
-			return statFS, root.Close, nil
-		},
+		ContextDir: contextDir,
+	}
+	p.ContextState = remotePolicyState
+	if p.ContextState == nil && remoteContext {
+		p.ContextState = resolveRemotePolicyContextState(inp.ContextPath, target)
 	}
 
 	if dockerfileDir != "" {
@@ -824,22 +846,27 @@ func loadInputs(ctx context.Context, d *driver.DriverHandle, inp *Inputs, pw pro
 			return nil, err
 		}
 		dockerfileName = handleLowercaseDockerfile(dockerfileDir, dockerfileName)
-
-		if fi, err := os.Lstat(filepath.Join(dockerfileDir, dockerfileName+".rego")); err == nil {
-			if fi.Mode().IsRegular() {
-				dt, err := os.ReadFile(filepath.Join(dockerfileDir, dockerfileName+".rego"))
-				if err != nil {
-					return nil, errors.Wrapf(err, "failed to read policy file %s.rego", dockerfileName)
-				}
-				p.Files = []policy.File{
-					{
-						Filename: dockerfileName + ".rego",
-						Data:     dt,
-					},
-				}
+	}
+	defaultPolicyFilename := dockerfileName + ".rego"
+	if dockerfileDir != "" {
+		defaultPolicyFilename = filepath.Join(dockerfileDir, defaultPolicyFilename)
+	}
+	defaultPolicy := policyFileSpec{
+		Filename: defaultPolicyFilename,
+		Optional: true,
+	}
+	if dockerfileDir != "" && contextDir != "" {
+		dt, err := os.ReadFile(defaultPolicyFilename)
+		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				return nil, errors.Wrapf(err, "failed to read policy file %s", defaultPolicyFilename)
 			}
+		} else {
+			defaultPolicy.Data = dt
 		}
 	}
+	p.Files = append(p.Files, defaultPolicy)
+
 	inp.policy = p
 
 	target.FrontendAttrs["filename"] = dockerfileName
@@ -926,6 +953,28 @@ func loadInputs(ctx context.Context, d *driver.DriverHandle, inp *Inputs, pw pro
 	inp.DockerfileMappingSrc = dockerfileSrcName
 	inp.DockerfileMappingDst = dockerfileName
 	return release, nil
+}
+
+func resolveRemotePolicyContextState(contextPath string, target *client.SolveOpt) *llb.State {
+	if target != nil && target.FrontendInputs != nil {
+		if st, ok := target.FrontendInputs["context"]; ok {
+			return &st
+		}
+	}
+
+	keepGitDir := false
+	if st, ok, _ := dockerui.DetectGitContext(contextPath, &keepGitDir); ok {
+		return st
+	}
+
+	st, filename, ok := dockerui.DetectHTTPContext(contextPath)
+	if !ok || filename == "" {
+		return nil
+	}
+	bc := llb.Scratch().File(llb.Copy(*st, filename, "/", &llb.CopyInfo{
+		AttemptUnpack: true,
+	}))
+	return &bc
 }
 
 func resolveDigest(localPath, tag string) (dig string, _ error) {

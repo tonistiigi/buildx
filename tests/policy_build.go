@@ -1,6 +1,8 @@
 package tests
 
 import (
+	"archive/tar"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,6 +35,8 @@ var policyBuildTests = []func(t *testing.T, sb integration.Sandbox){
 	testBuildPolicyEnv,
 	testBuildPolicyHTTP,
 	testBuildPolicyGit,
+	testBuildPolicyRemotePolicyFiles,
+	testBuildPolicyRemoteHTTPPolicyFiles,
 	testBuildPolicyConfigFlags,
 }
 
@@ -1089,7 +1093,7 @@ decision := {"allow": allow}
 				t,
 				fstest.CreateFile("policy.rego", []byte(tc.policy), 0600),
 			)
-			policyPath := filepath.Join(dir, "policy.rego")
+			policyPath := "cwd://policy.rego"
 
 			cmd := buildxCmd(sb, withDir(dir), withArgs(
 				"build",
@@ -1255,5 +1259,305 @@ decision := {"allow": allow}
 		out, err := cmd.CombinedOutput()
 		require.Error(t, err, string(out))
 		require.Contains(t, string(out), "disabled policy cannot be combined with other policy flags")
+	})
+}
+
+func testBuildPolicyRemotePolicyFiles(t *testing.T, sb integration.Sandbox) {
+	skipNoCompatBuildKit(t, sb, ">= 0.26.0-0", "policy input requires BuildKit v0.26.0+")
+
+	gitDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(gitDir, "Dockerfile"), []byte("FROM busybox:latest\nRUN echo remote-policy\n"), 0600))
+	require.NoError(t, os.MkdirAll(filepath.Join(gitDir, "policy"), 0700))
+	require.NoError(t, os.MkdirAll(filepath.Join(gitDir, "hack"), 0700))
+
+	require.NoError(t, os.WriteFile(filepath.Join(gitDir, "policy", "import.rego"), []byte(`
+package docker
+
+import data.hack.allow as allowlib
+
+default allow = false
+
+allow if allowlib.required
+
+decision := {"allow": allow}
+`), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(gitDir, "hack", "allow.rego"), []byte(`
+package hack.allow
+
+required := true
+`), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(gitDir, "policy", "json.rego"), []byte(`
+package docker
+
+default allow = false
+
+cfg := load_json("policy/config.json")
+
+allow if cfg.allow == true
+
+decision := {"allow": allow}
+`), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(gitDir, "policy", "config.json"), []byte(`{"allow": true}`), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(gitDir, "policy", "deny.rego"), []byte(`
+package docker
+
+default allow = false
+
+decision := {"allow": allow}
+`), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(gitDir, "remote-only.rego"), []byte(`
+package docker
+
+default allow = false
+
+decision := {"allow": allow}
+`), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(gitDir, "Dockerfile.rego"), []byte(`
+package docker
+
+default allow = true
+
+decision := {"allow": allow}
+`), 0600))
+
+	git, err := gitutil.New(gitutil.WithWorkingDir(gitDir))
+	require.NoError(t, err)
+	gittestutil.GitInit(git, t)
+	gittestutil.GitAdd(git, t, ".")
+	gittestutil.GitCommit(git, t, "initial commit")
+	baseURL := gittestutil.GitServeHTTP(git, t)
+
+	workDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "local-allow.rego"), []byte(`
+package docker
+
+default allow = true
+
+decision := {"allow": allow}
+`), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "local-only.rego"), []byte(`
+package docker
+
+default allow = true
+
+decision := {"allow": allow}
+`), 0600))
+
+	t.Run("remote-policy-import", func(t *testing.T) {
+		cmd := buildxCmd(sb, withDir(workDir), withArgs(
+			"build",
+			"--progress=plain",
+			"--policy", "filename=policy/import.rego",
+			"--output=type=cacheonly",
+			baseURL,
+		))
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, string(out))
+		require.Contains(t, string(out), "loading policies")
+		require.Contains(t, string(out), "policy/import.rego")
+	})
+
+	t.Run("remote-policy-load-json", func(t *testing.T) {
+		cmd := buildxCmd(sb, withDir(workDir), withArgs(
+			"build",
+			"--progress=plain",
+			"--policy", "filename=policy/json.rego",
+			"--output=type=cacheonly",
+			baseURL,
+		))
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, string(out))
+		require.Contains(t, string(out), "loading policies")
+		require.Contains(t, string(out), "policy/json.rego")
+	})
+
+	t.Run("remote-policy-cwd-override", func(t *testing.T) {
+		cmd := buildxCmd(sb, withDir(workDir), withArgs(
+			"build",
+			"--progress=plain",
+			"--policy", "filename=cwd://local-allow.rego",
+			"--output=type=cacheonly",
+			baseURL,
+		))
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, string(out))
+		require.Contains(t, string(out), "loading policies")
+		require.Contains(t, string(out), "cwd://local-allow.rego")
+	})
+
+	t.Run("remote-policy-no-local-fallback", func(t *testing.T) {
+		cmd := buildxCmd(sb, withDir(workDir), withArgs(
+			"build",
+			"--progress=plain",
+			"--policy", "filename=does-not-exist.rego",
+			"--output=type=cacheonly",
+			baseURL,
+		))
+		out, err := cmd.CombinedOutput()
+		require.Error(t, err, string(out))
+		require.Contains(t, string(out), "policy file does-not-exist.rego not found")
+	})
+
+	t.Run("remote-policy-prefers-remote-over-cwd", func(t *testing.T) {
+		cmd := buildxCmd(sb, withDir(workDir), withArgs(
+			"build",
+			"--progress=plain",
+			"--policy", "filename=remote-only.rego",
+			"--output=type=cacheonly",
+			baseURL,
+		))
+		out, err := cmd.CombinedOutput()
+		require.Error(t, err, string(out))
+		require.Contains(t, string(out), "not allowed by policy")
+		require.Contains(t, string(out), "loading policies")
+		require.Contains(t, string(out), "remote-only.rego")
+	})
+
+	t.Run("remote-policy-cwd-prefix-uses-local", func(t *testing.T) {
+		cmd := buildxCmd(sb, withDir(workDir), withArgs(
+			"build",
+			"--progress=plain",
+			"--policy", "filename=cwd://local-only.rego",
+			"--output=type=cacheonly",
+			baseURL,
+		))
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, string(out))
+		require.Contains(t, string(out), "loading policies")
+		require.Contains(t, string(out), "cwd://local-only.rego")
+	})
+
+	t.Run("remote-policy-default-from-remote-git", func(t *testing.T) {
+		cmd := buildxCmd(sb, withDir(workDir), withArgs(
+			"build",
+			"--progress=plain",
+			"--output=type=cacheonly",
+			baseURL,
+		))
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, string(out))
+		require.Contains(t, string(out), "loading policies Dockerfile.rego")
+	})
+}
+
+func testBuildPolicyRemoteHTTPPolicyFiles(t *testing.T, sb integration.Sandbox) {
+	skipNoCompatBuildKit(t, sb, ">= 0.26.0-0", "policy input requires BuildKit v0.26.0+")
+
+	makeTar := func(t *testing.T, files map[string]string) []byte {
+		t.Helper()
+		var buf bytes.Buffer
+		tw := tar.NewWriter(&buf)
+		for name, data := range files {
+			dt := []byte(data)
+			require.NoError(t, tw.WriteHeader(&tar.Header{
+				Name: name,
+				Mode: 0600,
+				Size: int64(len(dt)),
+			}))
+			_, err := tw.Write(dt)
+			require.NoError(t, err)
+		}
+		require.NoError(t, tw.Close())
+		return buf.Bytes()
+	}
+
+	archiveURLPath := "/context.tar"
+	singleURLPath := "/Dockerfile"
+	server := httpserver.NewTestServer(map[string]*httpserver.Response{
+		archiveURLPath: {
+			Content: makeTar(t, map[string]string{
+				"Dockerfile": `FROM busybox:latest
+RUN echo http-archive-policy
+`,
+				"policy/allow.rego": `
+package docker
+
+default allow = true
+
+decision := {"allow": allow}
+`,
+			}),
+		},
+		singleURLPath: {
+			Content: []byte("FROM busybox:latest\nRUN echo http-single-file\n"),
+		},
+	})
+	defer server.Close()
+
+	workDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "Dockerfile.rego"), []byte(`
+package docker
+
+default allow = false
+
+decision := {"allow": allow}
+`), 0600))
+
+	t.Run("http-archive-policy-file", func(t *testing.T) {
+		cmd := buildxCmd(sb, withDir(workDir), withArgs(
+			"build",
+			"--progress=plain",
+			"--policy", "filename=policy/allow.rego",
+			"--output=type=cacheonly",
+			server.URL+archiveURLPath,
+		))
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, string(out))
+		require.Contains(t, string(out), "loading policies")
+		require.Contains(t, string(out), "policy/allow.rego")
+	})
+
+	t.Run("http-single-file-required-policy-not-found", func(t *testing.T) {
+		cmd := buildxCmd(sb, withDir(workDir), withArgs(
+			"build",
+			"--progress=plain",
+			"--policy", "filename=policy/allow.rego",
+			"--output=type=cacheonly",
+			server.URL+singleURLPath,
+		))
+		out, err := cmd.CombinedOutput()
+		require.Error(t, err, string(out))
+		require.Contains(t, string(out), "policy file policy/allow.rego not found")
+	})
+
+	t.Run("http-single-file-no-local-default-fallback", func(t *testing.T) {
+		cmd := buildxCmd(sb, withDir(workDir), withArgs(
+			"build",
+			"--progress=plain",
+			"--output=type=cacheonly",
+			server.URL+singleURLPath,
+		))
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, string(out))
+	})
+
+	t.Run("http-archive-default-from-remote-context", func(t *testing.T) {
+		serverWithDefault := httpserver.NewTestServer(map[string]*httpserver.Response{
+			archiveURLPath: {
+				Content: makeTar(t, map[string]string{
+					"Dockerfile": `FROM busybox:latest
+RUN echo http-archive-default
+`,
+					"Dockerfile.rego": `
+package docker
+
+default allow = true
+
+decision := {"allow": allow}
+`,
+				}),
+			},
+		})
+		defer serverWithDefault.Close()
+
+		cmd := buildxCmd(sb, withDir(workDir), withArgs(
+			"build",
+			"--progress=plain",
+			"--output=type=cacheonly",
+			serverWithDefault.URL+archiveURLPath,
+		))
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, string(out))
+		require.Contains(t, string(out), "loading policies Dockerfile.rego")
 	})
 }

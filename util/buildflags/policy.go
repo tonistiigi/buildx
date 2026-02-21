@@ -1,7 +1,6 @@
 package buildflags
 
 import (
-	"os"
 	"strconv"
 	"strings"
 
@@ -56,11 +55,7 @@ func parsePolicyFields(fields []string) (PolicyConfig, error) {
 			if value == "" {
 				return PolicyConfig{}, errors.Errorf("invalid value %s", field)
 			}
-			dt, err := os.ReadFile(value)
-			if err != nil {
-				return PolicyConfig{}, errors.Wrapf(err, "failed to read policy file %s", value)
-			}
-			cfg.Files = append(cfg.Files, policy.File{Filename: value, Data: dt})
+			cfg.Files = append(cfg.Files, policy.File{Filename: value})
 		case "reset":
 			b, err := strconv.ParseBool(value)
 			if err != nil {

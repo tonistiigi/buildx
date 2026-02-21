@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/fs"
 	"maps"
 	"os"
 	"slices"
@@ -22,7 +21,6 @@ import (
 	noderesolver "github.com/docker/buildx/build/resolver"
 	"github.com/docker/buildx/builder"
 	"github.com/docker/buildx/driver"
-	"github.com/docker/buildx/policy"
 	"github.com/docker/buildx/util/buildflags"
 	"github.com/docker/buildx/util/confutil"
 	"github.com/docker/buildx/util/desktop"
@@ -120,11 +118,22 @@ type Inputs struct {
 	policy *policyOpt
 }
 
-type policyOpt struct {
-	Files    []policy.File
-	FS       func() (fs.StatFS, func() error, error)
+type policyFileSpec struct {
+	Filename string
+	Optional bool
+	Data     []byte
+}
+
+type policyEvalOpt struct {
 	Strict   bool
 	LogLevel *logrus.Level
+}
+
+type policyOpt struct {
+	Files        []policyFileSpec
+	ContextDir   string
+	ContextState *llb.State
+	policyEvalOpt
 }
 
 func withPolicyConfig(defaultPolicy policyOpt, configs []buildflags.PolicyConfig) ([]policyOpt, error) {
@@ -176,7 +185,10 @@ func withPolicyConfig(defaultPolicy policyOpt, configs []buildflags.PolicyConfig
 		}
 
 		opt := policyOpt{
-			Files: cfg.Files,
+			Files: make([]policyFileSpec, 0, len(cfg.Files)),
+		}
+		for _, f := range cfg.Files {
+			opt.Files = append(opt.Files, policyFileSpec{Filename: f.Filename})
 		}
 		if last.Strict != nil {
 			opt.Strict = *last.Strict
@@ -190,7 +202,8 @@ func withPolicyConfig(defaultPolicy policyOpt, configs []buildflags.PolicyConfig
 		if cfg.LogLevel != nil {
 			opt.LogLevel = cfg.LogLevel
 		}
-		opt.FS = defaultPolicy.FS
+		opt.ContextDir = defaultPolicy.ContextDir
+		opt.ContextState = defaultPolicy.ContextState
 		out = append(out, opt)
 	}
 

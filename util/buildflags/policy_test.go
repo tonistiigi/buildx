@@ -14,8 +14,7 @@ import (
 func TestPolicyConfigs_FromCtyValue(t *testing.T) {
 	policyDir := t.TempDir()
 	policyPath := filepath.Join(policyDir, "policy.rego")
-	policyData := []byte("package docker\n")
-	require.NoError(t, os.WriteFile(policyPath, policyData, 0o600))
+	require.NoError(t, os.WriteFile(policyPath, []byte("package docker\n"), 0o600))
 
 	in := cty.TupleVal([]cty.Value{
 		cty.ObjectVal(map[string]cty.Value{
@@ -33,7 +32,7 @@ func TestPolicyConfigs_FromCtyValue(t *testing.T) {
 	require.Len(t, actual, 2)
 
 	require.Equal(t, policyPath, actual[0].Files[0].Filename)
-	require.Equal(t, policyData, actual[0].Files[0].Data)
+	require.Nil(t, actual[0].Files[0].Data)
 	require.True(t, actual[0].Reset)
 	require.NotNil(t, actual[0].Strict)
 	require.True(t, *actual[0].Strict)
@@ -41,7 +40,7 @@ func TestPolicyConfigs_FromCtyValue(t *testing.T) {
 	require.Equal(t, logrus.WarnLevel, *actual[0].LogLevel)
 
 	require.Equal(t, policyPath, actual[1].Files[0].Filename)
-	require.Equal(t, policyData, actual[1].Files[0].Data)
+	require.Nil(t, actual[1].Files[0].Data)
 	require.True(t, actual[1].Disabled)
 }
 
@@ -82,13 +81,12 @@ func TestPolicyConfigs_ToCtyValue(t *testing.T) {
 func TestPolicyConfig_FromCtyValue(t *testing.T) {
 	policyDir := t.TempDir()
 	policyPath := filepath.Join(policyDir, "policy.rego")
-	policyData := []byte("package docker\n")
-	require.NoError(t, os.WriteFile(policyPath, policyData, 0o600))
+	require.NoError(t, os.WriteFile(policyPath, []byte("package docker\n"), 0o600))
 
 	var actual PolicyConfig
 	err := actual.FromCtyValue(cty.StringVal("filename="+policyPath+",disabled=true"), nil)
 	require.NoError(t, err)
 	require.Equal(t, policyPath, actual.Files[0].Filename)
-	require.Equal(t, policyData, actual.Files[0].Data)
+	require.Nil(t, actual.Files[0].Data)
 	require.True(t, actual.Disabled)
 }
