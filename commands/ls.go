@@ -40,6 +40,7 @@ const (
 type lsOptions struct {
 	format  string
 	noTrunc bool
+	timeout time.Duration
 }
 
 func runLs(ctx context.Context, dockerCli command.Cli, in lsOptions) error {
@@ -60,7 +61,7 @@ func runLs(ctx context.Context, dockerCli command.Cli, in lsOptions) error {
 	}
 
 	timeoutCtx, cancel := context.WithCancelCause(ctx)
-	timeoutCtx, _ = context.WithTimeoutCause(timeoutCtx, 20*time.Second, errors.WithStack(context.DeadlineExceeded)) //nolint:govet // no need to manually cancel this context as we already rely on parent
+	timeoutCtx, _ = context.WithTimeoutCause(timeoutCtx, in.timeout, errors.WithStack(context.DeadlineExceeded)) //nolint:govet // no need to manually cancel this context as we already rely on parent
 	defer func() { cancel(errors.WithStack(context.Canceled)) }()
 
 	eg, _ := errgroup.WithContext(timeoutCtx)
@@ -114,6 +115,7 @@ func lsCmd(dockerCli command.Cli) *cobra.Command {
 	flags := cmd.Flags()
 	flags.StringVar(&options.format, "format", formatter.TableFormatKey, "Format the output")
 	flags.BoolVar(&options.noTrunc, "no-trunc", false, "Don't truncate output")
+	setBuilderStatusTimeoutFlag(flags, &options.timeout)
 
 	// hide builder persistent flag for this command
 	cobrautil.HideInheritedFlags(cmd, "builder")

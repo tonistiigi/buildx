@@ -21,6 +21,7 @@ type rmOptions struct {
 	keepDaemon  bool
 	allInactive bool
 	force       bool
+	timeout     time.Duration
 }
 
 const (
@@ -46,7 +47,11 @@ func runRm(ctx context.Context, dockerCli command.Cli, in rmOptions) error {
 		return rmAllInactive(ctx, txn, dockerCli, in)
 	}
 
-	eg, _ := errgroup.WithContext(ctx)
+	timeoutCtx, cancel := context.WithCancelCause(ctx)
+	timeoutCtx, _ = context.WithTimeoutCause(timeoutCtx, in.timeout, errors.WithStack(context.DeadlineExceeded)) //nolint:govet // no need to manually cancel this context as we already rely on parent
+	defer func() { cancel(errors.WithStack(context.Canceled)) }()
+
+	eg, _ := errgroup.WithContext(timeoutCtx)
 	for _, name := range in.builders {
 		func(name string) {
 			eg.Go(func() (err error) {
@@ -67,7 +72,7 @@ func runRm(ctx context.Context, dockerCli command.Cli, in rmOptions) error {
 					return err
 				}
 
-				nodes, err := b.LoadNodes(ctx)
+				nodes, err := b.LoadNodes(timeoutCtx)
 				if err != nil {
 					return err
 				}
@@ -120,6 +125,7 @@ func rmCmd(dockerCli command.Cli, rootOpts *rootOptions) *cobra.Command {
 	flags.BoolVar(&options.keepDaemon, "keep-daemon", false, "Keep the BuildKit daemon running")
 	flags.BoolVar(&options.allInactive, "all-inactive", false, "Remove all inactive builders")
 	flags.BoolVarP(&options.force, "force", "f", false, "Do not prompt for confirmation")
+	setBuilderStatusTimeoutFlag(flags, &options.timeout)
 
 	return cmd
 }
@@ -152,7 +158,7 @@ func rmAllInactive(ctx context.Context, txn *store.Txn, dockerCli command.Cli, i
 	}
 
 	timeoutCtx, cancel := context.WithCancelCause(ctx)
-	timeoutCtx, _ = context.WithTimeoutCause(timeoutCtx, 20*time.Second, errors.WithStack(context.DeadlineExceeded)) //nolint:govet // no need to manually cancel this context as we already rely on parent
+	timeoutCtx, _ = context.WithTimeoutCause(timeoutCtx, in.timeout, errors.WithStack(context.DeadlineExceeded)) //nolint:govet // no need to manually cancel this context as we already rely on parent
 	defer func() { cancel(errors.WithStack(context.Canceled)) }()
 
 	eg, _ := errgroup.WithContext(timeoutCtx)

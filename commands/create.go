@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/docker/buildx/builder"
 	"github.com/docker/buildx/driver"
@@ -27,6 +28,7 @@ type createOptions struct {
 	buildkitdFlags      string
 	buildkitdConfigFile string
 	bootstrap           bool
+	timeout             time.Duration
 	// upgrade      bool // perform upgrade of the driver
 }
 
@@ -61,6 +63,7 @@ func runCreate(ctx context.Context, dockerCli command.Cli, in createOptions, arg
 		Use:                 in.use,
 		Endpoint:            ep,
 		Append:              in.actionAppend,
+		Timeout:             in.timeout,
 	})
 	if err != nil {
 		return err
@@ -120,6 +123,7 @@ func createCmd(dockerCli command.Cli) *cobra.Command {
 	flags.BoolVar(&options.actionAppend, "append", false, "Append a node to builder instead of changing it")
 	flags.BoolVar(&options.actionLeave, "leave", false, "Remove a node from builder instead of changing it")
 	flags.BoolVar(&options.use, "use", false, "Set the current builder instance")
+	setBuilderStatusTimeoutFlag(flags, &options.timeout)
 
 	// hide builder persistent flag for this command
 	cobrautil.HideInheritedFlags(cmd, "builder")

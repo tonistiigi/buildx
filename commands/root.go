@@ -3,6 +3,7 @@ package commands
 import (
 	"fmt"
 	"os"
+	"time"
 
 	historycmd "github.com/docker/buildx/commands/history"
 	imagetoolscmd "github.com/docker/buildx/commands/imagetools"
@@ -141,4 +142,8 @@ func addCommands(cmd *cobra.Command, opts *rootOptions, dockerCli command.Cli) {
 func rootFlags(options *rootOptions, flags *pflag.FlagSet) {
 	flags.StringVar(&options.builder, "builder", os.Getenv("BUILDX_BUILDER"), "Override the configured builder instance")
 	flags.BoolVarP(&options.debug, "debug", "D", debug.IsEnabled(), "Enable debug logging")
+}
+
+func setBuilderStatusTimeoutFlag(flags *pflag.FlagSet, target *time.Duration) {
+	flags.DurationVar(target, "timeout", 20*time.Second, "Override the default timeout for loading builder status")
 }
