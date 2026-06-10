@@ -29,6 +29,10 @@ type Env struct {
 	Filename string             `json:"filename,omitempty"`
 	Target   string             `json:"target,omitempty"`
 	Depth    int                `json:"depth"`
+
+	// CapsRequest marks the pre-build capabilities request that is
+	// evaluated once with only the environment input set.
+	CapsRequest bool `json:"capsRequest,omitempty"`
 }
 
 type HTTP struct {

@@ -130,27 +130,10 @@ func (p *Policy) IsPolicyError(err error) bool {
 	return false
 }
 
-func (p *Policy) CheckPolicy(ctx context.Context, req *policysession.CheckPolicyRequest) (*policysession.DecisionResponse, *gwpb.ResolveSourceMetaRequest, error) {
-	if req.Source == nil || req.Source.Source == nil {
-		return nil, nil, errors.Errorf("no source info in request")
-	}
-
-	var platform *ocispecs.Platform
-	if req.Platform != nil {
-		pl, err := platformFromReq(req)
-		if err != nil {
-			return nil, nil, err
-		}
-		platform = pl
-	} else {
-		platform = p.opt.DefaultPlatform
-	}
-
-	inp, err := SourceToInput(ctx, p.opt.VerifierProvider, req.Source, platform, p.opt.Log)
-	if err != nil {
-		return nil, nil, errors.Wrap(err, "failed to build policy input")
-	}
-
+// regoBaseOpts returns the rego evaluation options shared by all policy
+// queries and a cleanup function that releases the policy FS if it was
+// opened by the module loader.
+func (p *Policy) regoBaseOpts() ([]func(*rego.Rego), func()) {
 	caps := &ast.Capabilities{
 		Builtins: builtins(),
 		Features: slices.Clone(ast.Features),
@@ -171,11 +154,11 @@ func (p *Policy) CheckPolicy(ctx context.Context, req *policysession.CheckPolicy
 
 	var root fs.StatFS
 	var closeFS func() error
-	defer func() {
+	cleanup := func() {
 		if closeFS != nil {
 			closeFS()
 		}
-	}()
+	}
 
 	comp = comp.WithModuleLoader(func(resolved map[string]*ast.Module) (parsed map[string]*ast.Module, err error) {
 		out := make(map[string]*ast.Module)
@@ -239,6 +222,51 @@ func (p *Policy) CheckPolicy(ctx context.Context, req *policysession.CheckPolicy
 	for _, file := range p.opt.Files {
 		baseOpts = append(baseOpts, rego.Module(file.Filename, string(file.Data)))
 	}
+
+	return baseOpts, cleanup
+}
+
+// decisionResult extracts the decision document from a policy query
+// result set.
+func decisionResult(rs rego.ResultSet) (map[string]any, error) {
+	if len(rs) == 0 {
+		return nil, errors.Errorf("policy returned zero result")
+	}
+	rsz := rs[0]
+	if len(rsz.Expressions) == 0 {
+		return nil, errors.Errorf("policy returned zero expressions")
+	}
+	v := rsz.Expressions[0].Value
+	vt, ok := v.(map[string]any)
+	if !ok {
+		return nil, errors.Errorf("unexpected policy return type: %T %s", v, rsz.Expressions[0].Text)
+	}
+	return vt, nil
+}
+
+func (p *Policy) CheckPolicy(ctx context.Context, req *policysession.CheckPolicyRequest) (*policysession.DecisionResponse, *gwpb.ResolveSourceMetaRequest, error) {
+	if req.Source == nil || req.Source.Source == nil {
+		return nil, nil, errors.Errorf("no source info in request")
+	}
+
+	var platform *ocispecs.Platform
+	if req.Platform != nil {
+		pl, err := platformFromReq(req)
+		if err != nil {
+			return nil, nil, err
+		}
+		platform = pl
+	} else {
+		platform = p.opt.DefaultPlatform
+	}
+
+	inp, err := SourceToInput(ctx, p.opt.VerifierProvider, req.Source, platform, p.opt.Log)
+	if err != nil {
+		return nil, nil, errors.Wrap(err, "failed to build policy input")
+	}
+
+	baseOpts, cleanup := p.regoBaseOpts()
+	defer cleanup()
 
 	p.log(logrus.InfoLevel, "checking policy for source %s", sourceName(req))
 
@@ -304,17 +332,9 @@ func (p *Policy) CheckPolicy(ctx context.Context, req *policysession.CheckPolicy
 			continue
 		}
 
-		if len(rs) == 0 {
-			return nil, nil, errors.Errorf("policy returned zero result")
-		}
-		rsz := rs[0]
-		if len(rsz.Expressions) == 0 {
-			return nil, nil, errors.Errorf("policy returned zero expressions")
-		}
-		v := rsz.Expressions[0].Value
-		vt, ok := v.(map[string]any)
-		if !ok {
-			return nil, nil, errors.Errorf("unexpected policy return type: %T %s", vt, rsz.Expressions[0].Text)
+		vt, err := decisionResult(rs)
+		if err != nil {
+			return nil, nil, err
 		}
 
 		resp := &policysession.DecisionResponse{

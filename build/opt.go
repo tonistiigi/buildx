@@ -750,6 +750,28 @@ func configureSourcePolicy(ctx context.Context, np *noderesolver.ResolvedNode, o
 			}
 		}
 	}
+	// Capabilities request: evaluate each policy once with only the
+	// environment input set, before any build request is issued. This
+	// validates the policies early and lets them request capabilities
+	// that change how the build itself is configured.
+	var execProxy bool
+	for _, p := range policies {
+		pcaps, err := p.CheckCaps(ctx)
+		if err != nil {
+			return nil, err
+		}
+		execProxy = execProxy || pcaps.ExecProxy
+	}
+	if execProxy {
+		if bopts.LLBCaps.Supports(pb.CapExecMetaNetworkProxy) != nil {
+			return nil, errors.New("network proxy requested by policy is not supported by the current BuildKit daemon, please upgrade to version v0.31+")
+		}
+		so.ProxyNetwork = true
+		if policyLogger != nil {
+			policyLogger.Log("policy enabled network proxy")
+		}
+	}
+
 	so.SourcePolicyProvider = policysession.NewPolicyProvider(policy.MultiPolicyCallback(cbs...))
 	return defers, nil
 }
