@@ -750,8 +750,45 @@ func configureSourcePolicy(ctx context.Context, np *noderesolver.ResolvedNode, o
 			}
 		}
 	}
+	if err := applyPolicyCaps(ctx, policies, bopts, so); err != nil {
+		return nil, err
+	}
+
 	so.SourcePolicyProvider = policysession.NewPolicyProvider(policy.MultiPolicyCallback(cbs...))
 	return defers, nil
+}
+
+// applyPolicyCaps runs the offline capabilities evaluation for each policy and
+// applies the union of the requested capabilities to the solve request. The
+// policy-facing capability names are intentionally decoupled from BuildKit cap
+// IDs; buildx owns the mapping. A requested capability that buildx does not
+// understand, or that the BuildKit daemon does not support, fails the build.
+func applyPolicyCaps(ctx context.Context, policies []*policy.Policy, bopts gateway.BuildOpts, so *client.SolveOpt) error {
+	caps := map[string]bool{}
+	for _, p := range policies {
+		c, err := p.CheckCaps(ctx)
+		if err != nil {
+			return err
+		}
+		for k, v := range c {
+			if v {
+				caps[k] = true
+			}
+		}
+	}
+
+	for name := range caps {
+		switch name {
+		case "exec.proxy":
+			if err := bopts.LLBCaps.Supports(pb.CapExecMetaNetworkProxy); err != nil {
+				return errors.Wrapf(err, "policy requires %q capability but the current BuildKit daemon does not support it", name)
+			}
+			so.ProxyNetwork = true
+		default:
+			return errors.Errorf("policy requires unknown capability %q", name)
+		}
+	}
+	return nil
 }
 
 func policyEnvFilename(inp Inputs) string {

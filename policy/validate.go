@@ -151,94 +151,15 @@ func (p *Policy) CheckPolicy(ctx context.Context, req *policysession.CheckPolicy
 		return nil, nil, errors.Wrap(err, "failed to build policy input")
 	}
 
-	caps := &ast.Capabilities{
-		Builtins: builtins(),
-		Features: slices.Clone(ast.Features),
+	baseOpts, closeFS, err := p.compileBaseOpts()
+	if err != nil {
+		return nil, nil, err
 	}
-	comp := ast.NewCompiler().WithCapabilities(caps).WithKeepModules(true)
-	if p.opt.Log != nil {
-		comp = comp.WithEnablePrintStatements(true)
-	}
-
-	builtins := make(map[string]*ast.Builtin)
-	for _, f := range p.funcs {
-		builtins[f.decl.Name] = &ast.Builtin{
-			Name: f.decl.Name,
-			Decl: f.decl.Decl,
-		}
-	}
-	comp = comp.WithBuiltins(builtins)
-
-	var root fs.StatFS
-	var closeFS func() error
 	defer func() {
 		if closeFS != nil {
 			closeFS()
 		}
 	}()
-
-	comp = comp.WithModuleLoader(func(resolved map[string]*ast.Module) (parsed map[string]*ast.Module, err error) {
-		out := make(map[string]*ast.Module)
-		for k, v := range resolved {
-			for _, imp := range v.Imports {
-				pv := imp.Path.Value.String()
-				pkgPath, ok := strings.CutPrefix(pv, "data.")
-				if !ok {
-					continue
-				}
-				fn := strings.ReplaceAll(pkgPath, ".", "/") + ".rego"
-				if _, ok := resolved[fn]; !ok {
-					if root == nil {
-						if p.opt.FS == nil {
-							return nil, errors.Errorf("no policy FS defined for import %s", pv)
-						}
-						f, cf, err := p.opt.FS()
-						if err != nil {
-							return nil, errors.Wrapf(err, "failed to get policy FS for import %s", pv)
-						}
-						root = f
-						closeFS = cf
-					}
-					if _, err := root.Stat(fn); err != nil {
-						return nil, errors.Wrapf(err, "import %s not found for module %s", pv, k)
-					}
-					dt, err := fs.ReadFile(root, fn)
-					if err != nil {
-						return nil, errors.Wrapf(err, "failed to read imported policy file %s for module %s", fn, k)
-					}
-					mod, err := ast.ParseModule(fn, string(dt))
-					if err != nil {
-						return nil, errors.Wrapf(err, "failed to parse imported policy file %s for module %s", fn, k)
-					}
-					pkgParts := strings.Split(pkgPath, ".")
-					ref := ast.Ref{mod.Package.Path[0]}
-					for _, p := range pkgParts {
-						ref = append(ref, ast.StringTerm(p))
-					}
-					mod.Package = &ast.Package{Path: ref}
-					out[fn] = mod
-				}
-			}
-		}
-		return out, nil
-	})
-
-	baseOpts := []func(*rego.Rego){
-		rego.SetRegoVersion(ast.RegoV1),
-		rego.Query("data.docker.decision"),
-		rego.SkipPartialNamespace(true),
-		rego.Compiler(comp),
-		rego.Module(builtinPolicyModuleFilename, builtinPolicyModule),
-	}
-	if p.opt.Log != nil {
-		baseOpts = append(baseOpts,
-			rego.EnablePrintStatements(true),
-			rego.PrintHook(p),
-		)
-	}
-	for _, file := range p.opt.Files {
-		baseOpts = append(baseOpts, rego.Module(file.Filename, string(file.Data)))
-	}
 
 	p.log(logrus.InfoLevel, "checking policy for source %s", sourceName(req))
 
@@ -371,6 +292,172 @@ func (p *Policy) CheckPolicy(ctx context.Context, req *policysession.CheckPolicy
 	}
 
 	return nil, nil, errors.Errorf("maximum attempts reached for resolving policy metadata")
+}
+
+// compileBaseOpts builds the rego options shared by every evaluation: the
+// compiler with the policy builtins and import loader, the decision query and
+// the policy modules. The returned closeFS releases the lazily-opened policy FS
+// and must be called by the caller once evaluation completes.
+func (p *Policy) compileBaseOpts() (baseOpts []func(*rego.Rego), closeFS func() error, err error) {
+	caps := &ast.Capabilities{
+		Builtins: builtins(),
+		Features: slices.Clone(ast.Features),
+	}
+	comp := ast.NewCompiler().WithCapabilities(caps).WithKeepModules(true)
+	if p.opt.Log != nil {
+		comp = comp.WithEnablePrintStatements(true)
+	}
+
+	builtins := make(map[string]*ast.Builtin)
+	for _, f := range p.funcs {
+		builtins[f.decl.Name] = &ast.Builtin{
+			Name: f.decl.Name,
+			Decl: f.decl.Decl,
+		}
+	}
+	comp = comp.WithBuiltins(builtins)
+
+	var root fs.StatFS
+	comp = comp.WithModuleLoader(func(resolved map[string]*ast.Module) (parsed map[string]*ast.Module, err error) {
+		out := make(map[string]*ast.Module)
+		for k, v := range resolved {
+			for _, imp := range v.Imports {
+				pv := imp.Path.Value.String()
+				pkgPath, ok := strings.CutPrefix(pv, "data.")
+				if !ok {
+					continue
+				}
+				fn := strings.ReplaceAll(pkgPath, ".", "/") + ".rego"
+				if _, ok := resolved[fn]; !ok {
+					if root == nil {
+						if p.opt.FS == nil {
+							return nil, errors.Errorf("no policy FS defined for import %s", pv)
+						}
+						f, cf, err := p.opt.FS()
+						if err != nil {
+							return nil, errors.Wrapf(err, "failed to get policy FS for import %s", pv)
+						}
+						root = f
+						closeFS = cf
+					}
+					if _, err := root.Stat(fn); err != nil {
+						return nil, errors.Wrapf(err, "import %s not found for module %s", pv, k)
+					}
+					dt, err := fs.ReadFile(root, fn)
+					if err != nil {
+						return nil, errors.Wrapf(err, "failed to read imported policy file %s for module %s", fn, k)
+					}
+					mod, err := ast.ParseModule(fn, string(dt))
+					if err != nil {
+						return nil, errors.Wrapf(err, "failed to parse imported policy file %s for module %s", fn, k)
+					}
+					pkgParts := strings.Split(pkgPath, ".")
+					ref := ast.Ref{mod.Package.Path[0]}
+					for _, p := range pkgParts {
+						ref = append(ref, ast.StringTerm(p))
+					}
+					mod.Package = &ast.Package{Path: ref}
+					out[fn] = mod
+				}
+			}
+		}
+		return out, nil
+	})
+
+	baseOpts = []func(*rego.Rego){
+		rego.SetRegoVersion(ast.RegoV1),
+		rego.Query("data.docker.decision"),
+		rego.SkipPartialNamespace(true),
+		rego.Compiler(comp),
+		rego.Module(builtinPolicyModuleFilename, builtinPolicyModule),
+	}
+	if p.opt.Log != nil {
+		baseOpts = append(baseOpts,
+			rego.EnablePrintStatements(true),
+			rego.PrintHook(p),
+		)
+	}
+	for _, file := range p.opt.Files {
+		baseOpts = append(baseOpts, rego.Module(file.Filename, string(file.Data)))
+	}
+
+	return baseOpts, closeFS, nil
+}
+
+// CheckCaps performs a one-shot, fully offline policy evaluation to determine
+// the capabilities the policy requires for the build (e.g. exec.proxy). Only
+// input.env is populated (with caps_request set); no source input is provided
+// and source metadata resolution is not permitted. The allow/deny decision is
+// ignored. It returns the capabilities map produced by the policy, or an error
+// if the evaluation would require resolving source metadata.
+func (p *Policy) CheckCaps(ctx context.Context) (map[string]bool, error) {
+	baseOpts, closeFS, err := p.compileBaseOpts()
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if closeFS != nil {
+			closeFS()
+		}
+	}()
+
+	var inp Input
+	env := p.opt.Env
+	env.CapsRequest = true
+	applyEnvWithDepth(&inp, env, 0)
+
+	st := &state{Input: inp}
+	runOpts := append([]func(*rego.Rego){}, baseOpts...)
+	runOpts = append(runOpts, rego.Input(inp))
+	for _, f := range p.funcs {
+		runOpts = append(runOpts, f.impl(st))
+	}
+
+	p.log(logrus.DebugLevel, "evaluating policy capabilities")
+
+	rs, err := rego.New(runOpts...).Eval(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// A caps request must be resolvable offline: if evaluation referenced source
+	// metadata that would normally trigger a resolve request, fail loudly rather
+	// than silently dropping capabilities.
+	unk := appendUnique(inp.Unknowns(), runtimeUnknownInputRefs(st)...)
+	if len(unk) > 0 {
+		return nil, errors.Errorf("policy capabilities evaluation requires source metadata resolution for %+v; caps must be resolvable offline", summarizeUnknownsForLog(unk))
+	}
+
+	if len(rs) == 0 || len(rs[0].Expressions) == 0 {
+		return nil, nil
+	}
+	vt, ok := rs[0].Expressions[0].Value.(map[string]any)
+	if !ok {
+		return nil, errors.Errorf("unexpected policy return type: %T", rs[0].Expressions[0].Value)
+	}
+
+	return parseCaps(vt)
+}
+
+// parseCaps extracts the optional caps object from a policy decision result.
+func parseCaps(vt map[string]any) (map[string]bool, error) {
+	v, ok := vt["caps"]
+	if !ok {
+		return nil, nil
+	}
+	m, ok := v.(map[string]any)
+	if !ok {
+		return nil, errors.Errorf("invalid caps property type %T, expecting object", v)
+	}
+	out := make(map[string]bool, len(m))
+	for k, vv := range m {
+		b, ok := vv.(bool)
+		if !ok {
+			return nil, errors.Errorf("invalid caps[%q] property type %T, expecting bool", k, vv)
+		}
+		out[k] = b
+	}
+	return out, nil
 }
 
 func (p *Policy) resolveUnknowns(ctx context.Context, input *Input, req *policysession.CheckPolicyRequest, defaultPlatform *ocispecs.Platform, unk []string, st *state) (bool, *gwpb.ResolveSourceMetaRequest, error) {

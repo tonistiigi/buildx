@@ -19,8 +19,9 @@ type Input struct {
 }
 
 type Decision struct {
-	Allow        *bool    `json:"allow,omitempty"`
-	DenyMessages []string `json:"deny_msg,omitempty"`
+	Allow        *bool           `json:"allow,omitempty"`
+	DenyMessages []string        `json:"deny_msg,omitempty"`
+	Caps         map[string]bool `json:"caps,omitempty"`
 }
 
 type Env struct {
@@ -29,6 +30,13 @@ type Env struct {
 	Filename string             `json:"filename,omitempty"`
 	Target   string             `json:"target,omitempty"`
 	Depth    int                `json:"depth"`
+
+	// CapsRequest marks a one-shot offline evaluation whose only purpose is to
+	// determine the capabilities the policy requires for the build (e.g.
+	// exec.proxy). For such a request no source input is provided, source
+	// metadata resolution is not permitted, and the allow/deny decision is
+	// ignored. Exposed to policies as input.env.caps_request.
+	CapsRequest bool `json:"caps_request,omitempty"`
 }
 
 type HTTP struct {
