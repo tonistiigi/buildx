@@ -21,8 +21,9 @@ import (
 )
 
 type loadedPolicyOpt struct {
-	Files []policy.File
-	FS    func() (fs.StatFS, func() error, error)
+	Files    []policy.File
+	FS       func() (fs.StatFS, func() error, error)
+	SkipCaps bool
 	policyEvalOpt
 }
 
@@ -37,6 +38,7 @@ func resolvePolicyOpts(ctx context.Context, in []policyOpt, resolver *sourcemeta
 		loaded := loadedPolicyOpt{
 			policyEvalOpt: popt.policyEvalOpt,
 			FS:            provider,
+			SkipCaps:      popt.SkipCaps,
 		}
 		for _, f := range popt.Files {
 			if f.Data != nil {

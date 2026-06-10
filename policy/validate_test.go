@@ -883,6 +883,67 @@ func TestSourceToInputSingleSource(t *testing.T) {
 	}
 }
 
+func TestCheckCaps(t *testing.T) {
+	p := NewPolicy(Opt{
+		Files: []File{{
+			Filename: "policy.rego",
+			Data: []byte(`
+package docker
+
+decision := {
+	"allow": false,
+	"deny_msg": ["ignored for caps"],
+	"caps": {
+		"exec.proxy": input.env.caps_request,
+		"other": false,
+	},
+} if {
+	input.env.filename == "Dockerfile"
+	input.env.target == "release"
+	input.env.args.MODE == "prod"
+}
+`),
+		}},
+		Env: Env{
+			Args:     map[string]*string{"MODE": stringPtr("prod")},
+			Filename: "Dockerfile",
+			Target:   "release",
+		},
+	})
+
+	caps, err := p.CheckCaps(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, Caps{
+		CapExecProxy: true,
+		"other":      false,
+	}, caps)
+}
+
+func TestCheckCapsMalformedCaps(t *testing.T) {
+	p := NewPolicy(Opt{
+		Files: []File{{
+			Filename: "policy.rego",
+			Data: []byte(`
+package docker
+
+decision := {
+	"allow": true,
+	"caps": {
+		"exec.proxy": "yes",
+	},
+}
+`),
+		}},
+	})
+
+	_, err := p.CheckCaps(context.Background())
+	require.ErrorContains(t, err, "invalid caps.exec.proxy property type string, expecting bool")
+}
+
+func stringPtr(v string) *string {
+	return &v
+}
+
 func mustMarshalImageConfig(t *testing.T, img ocispecs.Image) []byte {
 	t.Helper()
 	dt, err := json.Marshal(img)

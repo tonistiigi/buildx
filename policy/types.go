@@ -21,14 +21,20 @@ type Input struct {
 type Decision struct {
 	Allow        *bool    `json:"allow,omitempty"`
 	DenyMessages []string `json:"deny_msg,omitempty"`
+	Caps         Caps     `json:"caps,omitempty"`
 }
 
+type Caps map[string]bool
+
+const CapExecProxy = "exec.proxy"
+
 type Env struct {
-	Args     map[string]*string `json:"args,omitempty"`
-	Labels   map[string]string  `json:"labels,omitempty"`
-	Filename string             `json:"filename,omitempty"`
-	Target   string             `json:"target,omitempty"`
-	Depth    int                `json:"depth"`
+	Args        map[string]*string `json:"args,omitempty"`
+	Labels      map[string]string  `json:"labels,omitempty"`
+	Filename    string             `json:"filename,omitempty"`
+	Target      string             `json:"target,omitempty"`
+	CapsRequest bool               `json:"caps_request,omitempty"`
+	Depth       int                `json:"depth"`
 }
 
 type HTTP struct {

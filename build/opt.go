@@ -662,6 +662,7 @@ func configureSourcePolicy(ctx context.Context, np *noderesolver.ResolvedNode, o
 	// policies retain full control.
 	if defaultPolicyEnabled() && !policyExplicitlyDisabled(opt.Policy) {
 		builtin := policyOpt{
+			SkipCaps: true,
 			Files: []policyFileSpec{{
 				Filename: policy.DefaultPolicyFilename,
 				Data:     policy.DefaultPolicyData(),
@@ -742,6 +743,11 @@ func configureSourcePolicy(ctx context.Context, np *noderesolver.ResolvedNode, o
 			DefaultPlatform:  defaultPlatform(bopts),
 			SourceResolver:   sourceResolver,
 		})
+		if !popt.SkipCaps {
+			if err := applyPolicyCaps(ctx, p, bopts, so); err != nil {
+				return nil, err
+			}
+		}
 		policies = append(policies, p)
 		cbs = append(cbs, p.CheckPolicy)
 		if popt.Strict {
@@ -752,6 +758,21 @@ func configureSourcePolicy(ctx context.Context, np *noderesolver.ResolvedNode, o
 	}
 	so.SourcePolicyProvider = policysession.NewPolicyProvider(policy.MultiPolicyCallback(cbs...))
 	return defers, nil
+}
+
+func applyPolicyCaps(ctx context.Context, p *policy.Policy, bopts gateway.BuildOpts, so *client.SolveOpt) error {
+	caps, err := p.CheckCaps(ctx)
+	if err != nil {
+		return errors.Wrap(err, "failed to evaluate policy caps")
+	}
+	if !caps[policy.CapExecProxy] {
+		return nil
+	}
+	if err := bopts.LLBCaps.Supports(pb.CapExecMetaNetworkProxy); err != nil {
+		return errors.Wrap(err, "policy requested exec.proxy")
+	}
+	so.ProxyNetwork = true
+	return nil
 }
 
 func policyEnvFilename(inp Inputs) string {

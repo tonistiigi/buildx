@@ -146,6 +146,7 @@ type policyOpt struct {
 	Files        []policyFileSpec
 	ContextDir   string
 	ContextState *llb.State
+	SkipCaps     bool
 	policyEvalOpt
 }
 
