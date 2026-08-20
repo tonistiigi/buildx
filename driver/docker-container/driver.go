@@ -329,13 +329,15 @@ func (d *Driver) wait(ctx context.Context, l progress.SubLogger) error {
 		bufStdout := &bytes.Buffer{}
 		bufStderr := &bytes.Buffer{}
 		if err := d.run(ctx, []string{"buildctl", "debug", "workers"}, bufStdout, bufStderr); err != nil {
-			if try > 15 {
-				d.copyLogs(context.TODO(), l)
-				if bufStdout.Len() != 0 {
-					l.Log(1, bufStdout.Bytes())
-				}
-				if bufStderr.Len() != 0 {
-					l.Log(2, bufStderr.Bytes())
+			if try > 15 || !isReadinessStartupError(err) {
+				if l != nil {
+					d.copyLogs(context.TODO(), l)
+					if bufStdout.Len() != 0 {
+						l.Log(1, bufStdout.Bytes())
+					}
+					if bufStderr.Len() != 0 {
+						l.Log(2, bufStderr.Bytes())
+					}
 				}
 				return err
 			}
@@ -349,6 +351,20 @@ func (d *Driver) wait(ctx context.Context, l progress.SubLogger) error {
 		}
 		return nil
 	}
+}
+
+func isReadinessStartupError(err error) bool {
+	if errors.Is(err, errExecExit) {
+		return true
+	}
+	if cerrdefs.IsNotFound(err) || cerrdefs.IsUnavailable(err) {
+		return true
+	}
+	if cerrdefs.IsConflict(err) {
+		msg := strings.ToLower(err.Error())
+		return strings.Contains(msg, "is not running") || strings.Contains(msg, "is restarting")
+	}
+	return false
 }
 
 func (d *Driver) copyLogs(ctx context.Context, l progress.SubLogger) error {
@@ -403,7 +419,9 @@ func (d *Driver) exec(ctx context.Context, cmd []string) (string, net.Conn, erro
 	return execID, resp.Conn, nil
 }
 
-func (d *Driver) run(ctx context.Context, cmd []string, stdout, stderr io.Writer) (err error) {
+var errExecExit = errors.New("exec exit")
+
+func (d *Driver) run(ctx context.Context, cmd []string, stdout, stderr *bytes.Buffer) (err error) {
 	id, conn, err := d.exec(ctx, cmd)
 	if err != nil {
 		return err
@@ -417,7 +435,7 @@ func (d *Driver) run(ctx context.Context, cmd []string, stdout, stderr io.Writer
 		return err
 	}
 	if resp.ExitCode != 0 {
-		return errors.Errorf("exit code %d", resp.ExitCode)
+		return errors.Wrapf(errExecExit, "exit code %d\nstdout: %s\nstderr: %s", resp.ExitCode, strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()))
 	}
 	return nil
 }
@@ -508,6 +526,11 @@ func (d *Driver) Rm(ctx context.Context, force, rmVolume, rmDaemon bool) error {
 }
 
 func (d *Driver) Dial(ctx context.Context) (net.Conn, error) {
+	// Docker marks the container running before buildkitd has necessarily
+	// bound its socket, so verify readiness before opening dial-stdio.
+	if err := d.wait(ctx, nil); err != nil {
+		return nil, err
+	}
 	_, conn, err := d.exec(ctx, []string{"buildctl", "dial-stdio"})
 	if err != nil {
 		return nil, err
